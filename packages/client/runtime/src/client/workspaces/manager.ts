@@ -232,6 +232,19 @@ export class WorkspaceManager {
   }
 
   /**
+   * Permanently delete one session on the Host: its durable log is wiped and
+   * the live session (if attached) is disposed. The removal itself arrives on
+   * the host stream (`host/session-removed`), so this method only returns the
+   * wire result — the session domain owns dropping the list row.
+   * @param sessionId - session to delete.
+   * @returns the wire result (whether stored bytes existed and were removed).
+   */
+  async deleteSession(sessionId: SessionId): Promise<RpcResult<{ removed: boolean }>> {
+    const { result } = await this.api.sessions.delete({ sessionId })
+    return result
+  }
+
+  /**
    * Host-frame entry. Non-workspace frames are ignored so the runtime can
    * fan one host stream out to both object managers.
    * @param envelope - host stream envelope.

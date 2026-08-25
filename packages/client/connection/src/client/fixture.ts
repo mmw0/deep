@@ -1604,6 +1604,12 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
     const name = path.slice(path.lastIndexOf('/') + 1)
     return directoryTree.get(parent)?.includes(name) === true ? [] : undefined
   }
+  // In-memory text files the fixture's host.listFiles/readFile/writeFile face
+  // serves; seeded with one design-mock file per well-known directory.
+  const fixtureFiles = new Map<string, string>([
+    [`${FIXTURE_HOME}/Documents/project/README.md`, '# Fixture project\n\nEditable through the Files view.\n'],
+    [`${FIXTURE_HOME}/notes.txt`, 'fixture notes\n'],
+  ])
   const crumbsOf = (path: string): { name: string; path: string; hidden: boolean }[] => {
     const crumbs = [{ name: '/', path: '/', hidden: false }]
     let acc = ''
@@ -2600,6 +2606,15 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
         }
         return ok(request, { accepted: true as const })
       },
+      delete: (request) => {
+        const { sessionId } = request.payload
+        const index = sessions.findIndex(candidate => candidate.sessionId === sessionId)
+        if (index !== -1) sessions.splice(index, 1)
+        const archived = archivedSessionIds.indexOf(sessionId)
+        if (archived !== -1) archivedSessionIds.splice(archived, 1)
+        emitHost({ type: 'host/session-removed', sessionId })
+        return ok(request, { removed: index !== -1 })
+      },
     },
     subagents: {
       list: request => ok(request, { entries: [], parentAvailable: true }),
@@ -2656,6 +2671,38 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
         return ok(request, { path: target })
       },
       openPath: request => ok(request, { opened: true as const }),
+      listFiles: (request) => {
+        const target = request.payload.path ?? FIXTURE_HOME
+        const children = childrenOf(target)
+        if (children === undefined) {
+          return err(request, { code: 'directory-unreadable', message: `cannot list ${target}: not in the fixture tree`, details: { path: target } })
+        }
+        return ok(request, {
+          path: target,
+          home: FIXTURE_HOME,
+          crumbs: crumbsOf(target),
+          entries: [...children].sort((a, b) => a.localeCompare(b)).map(name => ({
+            name,
+            path: target === '/' ? `/${name}` : `${target}/${name}`,
+            isDirectory: childrenOf(target === '/' ? `/${name}` : `${target}/${name}`) !== undefined,
+            size: fixtureFiles.get(target === '/' ? `/${name}` : `${target}/${name}`)?.length ?? 0,
+            hidden: name.startsWith('.'),
+            symlink: false,
+          })),
+          truncated: false,
+        })
+      },
+      readFile: (request) => {
+        const content = fixtureFiles.get(request.payload.path)
+        if (content === undefined) {
+          return err(request, { code: 'file-not-found', message: `no fixture file at ${request.payload.path}`, details: { path: request.payload.path } })
+        }
+        return ok(request, { path: request.payload.path, content, size: content.length })
+      },
+      writeFile: (request) => {
+        fixtureFiles.set(request.payload.path, request.payload.content)
+        return ok(request, { path: request.payload.path, bytes: request.payload.content.length })
+      },
     },
     workspace: {
       list: request => ok(request, {
@@ -3187,6 +3234,7 @@ export class FixtureApiClient extends AbstractApiClient {
       case 'session.attachment': return this.api.sessions.attachment(request)
       case 'session.updateQueue': return this.api.sessions.updateQueue(request)
       case 'session.cancel': return this.api.sessions.cancel(request)
+      case 'session.delete': return this.api.sessions.delete(request)
       case 'subagent.list': return this.api.subagents.list(request)
       case 'subagent.history': return this.api.subagents.history(request)
       case 'subagent.prompt': return this.api.subagents.prompt(request, signal)
@@ -3196,6 +3244,9 @@ export class FixtureApiClient extends AbstractApiClient {
       case 'host.listDirectory': return this.api.host.listDirectory(request, new AbortController().signal)
       case 'host.createDirectory': return this.api.host.createDirectory(request)
       case 'host.openPath': return this.api.host.openPath(request, new AbortController().signal)
+      case 'host.listFiles': return this.api.host.listFiles(request, new AbortController().signal)
+      case 'host.readFile': return this.api.host.readFile(request, new AbortController().signal)
+      case 'host.writeFile': return this.api.host.writeFile(request)
       case 'workspace.list': return this.api.workspace.list(request)
       case 'workspace.create': return this.api.workspace.create(request)
       case 'workspace.rename': return this.api.workspace.rename(request)

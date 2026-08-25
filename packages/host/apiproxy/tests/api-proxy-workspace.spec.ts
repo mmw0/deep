@@ -277,7 +277,7 @@ describe('workspace.create', () => {
     expect(expectOk(await api.workspace.list(request({}))).items).toHaveLength(1)
   })
 
-  it('adopts only existing directories', async () => {
+  it('adopts only existing directories and creates missing ones', async () => {
     const { api, root } = await harness()
     const existing = stageDir(root, 'existing')
     const first = expectOk(await api.workspace.create(request({ path: existing })))
@@ -292,10 +292,12 @@ describe('workspace.create', () => {
     const reopened = expectOk(await api.workspace.create(request({ path: existing })))
     expect(reopened.workspace.title).toBe('renamed-existing')
 
+    // One-click create: a missing path is materialized (mkdir -p) instead of
+    // being rejected, so the NIXE quick-create and fresh-typed paths work.
     const missing = join(root, 'missing')
-    const missingResult = await api.workspace.create(request({ path: missing }))
-    expect(missingResult.result).toMatchObject({ ok: false, error: { code: 'workspace-invalid-path' } })
-    expect(existsSync(missing)).toBe(false)
+    const missingResult = expectOk(await api.workspace.create(request({ path: missing })))
+    expect(missingResult).toMatchObject({ created: true, workspace: { path: missing, title: 'missing' } })
+    expect(existsSync(missing)).toBe(true)
   })
 
   it('adopts different paths that derive the same Workspace title', async () => {
@@ -496,8 +498,8 @@ describe('Host Workspace increments', () => {
     expect(await next).toMatchObject({ done: true })
   })
 
-  it('deletes the registration, keeps its session and folder, and streams one removal', async () => {
-    const { api, ctx, root } = await harness()
+  it('deletes the registration, its sessions, and its folder, and streams one removal', async () => {
+    const { api, root } = await harness()
     const workspace = expectOk(await api.workspace.create(request({ path: stageDir(root, 'delete-me') }))).workspace
     const sessionId = SessionId('session-kept-after-workspace-delete')
     expectOk(await api.sessions.create(request({ workspaceId: workspace.workspaceId, sessionId })))
@@ -511,9 +513,12 @@ describe('Host Workspace increments', () => {
       payload: { type: 'host/workspace-removed', workspaceId: workspace.workspaceId },
     })
     expect(expectOk(await api.workspace.list(request({}))).items).toEqual([])
-    expect(expectOk(await api.sessions.list(request({}))).items.map(item => item.sessionId)).toContain(sessionId)
-    expect(ctx.agents.get(sessionId)).toBeDefined()
-    expect(existsSync(workspace.path)).toBe(true)
+    // This deployment's delete is TOTAL: the folder, the session logs, and
+    // the in-memory sessions are all wiped with the registration (the idle
+    // agent shell may linger like every other forceDispose consumer).
+    expect(expectOk(await api.sessions.list(request({}))).items.map(item => item.sessionId))
+      .not.toContain(sessionId)
+    expect(existsSync(workspace.path)).toBe(false)
 
     const missing = await api.workspace.delete(request({ workspaceId: workspace.workspaceId }))
     expect(missing.result).toMatchObject({
@@ -521,11 +526,15 @@ describe('Host Workspace increments', () => {
       error: { code: 'workspace-not-found', details: { workspaceId: workspace.workspaceId } },
     })
 
+    // Re-registering the (now absent) path materializes a fresh folder and a
+    // fresh, empty Workspace.
     const reregistered = expectOk(await api.workspace.create(request({ path: workspace.path }))).workspace
     expect(reregistered.workspaceId).not.toBe(workspace.workspaceId)
     expect(reregistered.path).toBe(workspace.path)
     expect(reregistered.sessionIds).toEqual([])
-    expect(expectOk(await api.sessions.list(request({}))).items.map(item => item.sessionId)).toContain(sessionId)
+    expect(existsSync(workspace.path)).toBe(true)
+    expect(expectOk(await api.sessions.list(request({}))).items.map(item => item.sessionId))
+      .not.toContain(sessionId)
     abort.abort()
   })
 
@@ -566,6 +575,38 @@ describe('Host Workspace increments', () => {
       ok: false,
       error: { code: 'session-not-found', details: { sessionId: 'session-ghost' } },
     })
+    abort.abort()
+  })
+
+  it('permanently deletes one session, drops it from every surface, and streams session-removed', async () => {
+    const { api, root } = await harness()
+    const workspace = expectOk(await api.workspace.create(request({ path: stageDir(root, 'delete-session-home') }))).workspace
+    const sessionId = SessionId('session-to-delete')
+    expectOk(await api.sessions.create(request({ workspaceId: workspace.workspaceId, sessionId })))
+    const survivor = SessionId('session-to-keep')
+    expectOk(await api.sessions.create(request({ workspaceId: workspace.workspaceId, sessionId: survivor })))
+    expect(expectOk(await api.sessions.list(request({}))).items.map(item => item.sessionId))
+      .toEqual(expect.arrayContaining([sessionId, survivor]))
+
+    const abort = new AbortController()
+    const stream: AsyncIterator<RpcRequest<HostFrame>> =
+      api.events.host(request({}), abort.signal)[Symbol.asyncIterator]()
+    const removed = nextHostFrame(stream)
+    expectOk(await api.sessions.delete(request({ sessionId })))
+    expect(await removed).toMatchObject({
+      payload: { type: 'host/session-removed', sessionId },
+    })
+    // The deleted session leaves the list; the sibling and the workspace stay.
+    const listed = expectOk(await api.sessions.list(request({}))).items.map(item => item.sessionId)
+    expect(listed).not.toContain(sessionId)
+    expect(listed).toContain(survivor)
+    expect(expectOk(await api.workspace.list(request({}))).items[0]?.sessionIds).toEqual([survivor])
+    // The workspace folder is untouched by a single-session delete.
+    expect(existsSync(workspace.path)).toBe(true)
+
+    // An unknown live-and-cold id resolves as an idempotent success.
+    const ghost = expectOk(await api.sessions.delete(request({ sessionId: SessionId('session-ghost') })))
+    expect(ghost.removed).toBe(false)
     abort.abort()
   })
 })

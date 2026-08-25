@@ -260,6 +260,27 @@ export class SqliteStore implements PersistenceBackend<number> {
     }))
   }
 
+  /**
+   * Permanently remove one session's rows: the sessions record and, through
+   * the schema's ON DELETE CASCADE, every event row it owns. An absent id is
+   * an idempotent miss.
+   * @param id - the persisted session to remove.
+   * @param signal - optional cancellation before the write.
+   * @returns whether a stored session row was removed.
+   */
+  async deleteSession(id: SessionId, signal?: AbortSignal): Promise<boolean> {
+    await this.observe(signal)
+    signal?.throwIfAborted()
+    try {
+      this.db.exec(sql('begin-immediate'))
+      const result = this.db.prepare(sql('delete-session')).run(id)
+      this.db.exec(sql('commit'))
+      return result.changes > 0
+    } catch (error: unknown) {
+      this.rollback(error, 'delete-session')
+    }
+  }
+
   async close(): Promise<void> {
     if (this.ready === undefined) {
       if (this.pathReady !== undefined) await Promise.allSettled([this.pathReady])

@@ -191,6 +191,29 @@ export function apply(ctx: Context): void {
     },
   }), 'ui-conversation: input standard-kit provider')
 
+  // Shared draft/image hand-off for the mode switches: moving from one blank
+  // session to another (workspace pick or chat switch) must not lose what was
+  // typed. Non-blank sources keep their history — only the pending draft and
+  // staged images travel.
+  const moveToSession = async (fromId: SessionId | undefined, nextId: SessionId): Promise<void> => {
+    if (fromId !== undefined && nextId !== fromId) {
+      const from = inputHub.shell(fromId)
+      const draft = from.snapshot.draft
+      const imageIds = from.snapshot.imageIds
+      const next = inputHub.shell(nextId)
+      if (imageIds.length === 0 || next.addImages(imageIds)) {
+        if (draft !== '') {
+          next.setDraft(draft)
+          from.setDraft('')
+        }
+        if (imageIds.length > 0) {
+          for (const id of imageIds) from.removeImage(id)
+        }
+      }
+    }
+    sessions.open(nextId)
+  }
+
   // Resident current-session-optional shell. It owns the stable Hero/composer
   // frame while strict session slots fill only their session-bound regions.
   slots.register({
@@ -214,22 +237,11 @@ export function apply(ctx: Context): void {
       hooks: { composerBlock: sessionId === undefined ? ABSENT_BLOCK : composerBlocks.storeFor(sessionId) },
       selectWorkspace: async (workspaceId) => {
         const nextId = await workspaces.connectWorkspace(workspaceId)
-        if (sessionId !== undefined && nextId !== sessionId) {
-          const from = inputHub.shell(sessionId)
-          const draft = from.snapshot.draft
-          const imageIds = from.snapshot.imageIds
-          const next = inputHub.shell(nextId)
-          if (imageIds.length === 0 || next.addImages(imageIds)) {
-            if (draft !== '') {
-              next.setDraft(draft)
-              from.setDraft('')
-            }
-            if (imageIds.length > 0) {
-              for (const id of imageIds) from.removeImage(id)
-            }
-          }
-        }
-        sessions.open(nextId)
+        await moveToSession(sessionId, nextId)
+      },
+      selectChat: async () => {
+        const nextId = await workspaces.connectChat()
+        await moveToSession(sessionId, nextId)
       },
     }),
   }, ConversationRoot)

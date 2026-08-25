@@ -294,6 +294,10 @@
     - id: ui-trajectory
       name: '@deepseek-ai/dsh-client-ui-trajectory'
 
+    # Sandbox file browser: the Files view tab (location + browse + edit).
+    - id: ui-files
+      name: '@deepseek-ai/dsh-client-ui-files'
+
 # ── the agent plane moves behind agent presets ─────────────────────────────
 #
 # Every row below composes what ONE agent contributes to the host registries:

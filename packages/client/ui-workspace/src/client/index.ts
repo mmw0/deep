@@ -98,6 +98,10 @@ export function apply(ctx: ClientContext): void {
       await ctx.workspaces.insertBefore(workspaceId, beforeWorkspaceId)
     },
     archiveSession: async (sessionId) => { await ctx.workspaces.archiveSession(sessionId) },
+    deleteSession: async (sessionId) => { await ctx.workspaces.deleteSession(sessionId) },
+    listFiles: (path, signal) => ctx.workspaces.listFiles(path, signal),
+    readFile: (path, signal) => ctx.workspaces.readFile(path, signal),
+    writeFile: (path, content) => ctx.workspaces.writeFile(path, content),
     insertSessionBefore: async (workspaceId, sessionId, beforeSessionId) => {
       await ctx.workspaces.insertSessionBefore(workspaceId, sessionId, beforeSessionId)
     },
@@ -106,7 +110,7 @@ export function apply(ctx: ClientContext): void {
   })
   const pickerInjected = (): WorkspacePickerInjected => ({
     createWorkspace: input => ctx.workspaces.create(input),
-    hooks: { directoryFlow: pickerFlowSource },
+    hooks: { directoryFlow: pickerFlowSource, hostDescription },
   })
   // Each registration declares its directory-flow child in the same call;
   // slot injection follows both the owner and declaration HMR lifetimes.

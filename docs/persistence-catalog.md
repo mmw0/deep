@@ -1005,3 +1005,14 @@ Source: [`packages/core/session/src/types.ts:264`](../packages/core/session/src/
 ```
 
 Source: [`packages/web/web-search-deepseek/src/provider.ts:83`](../packages/web/web-search-deepseek/src/provider.ts)
+
+<a id="webopenrouter-search-llm-request--log-only"></a>
+
+#### `web/openrouter-search-llm-request` — log-only
+
+```ts persistence-catalog
+/** Secret-free auxiliary OpenRouter search request recorded before dispatch. */
+'web/openrouter-search-llm-request': OpenRouterSearchLlmRequest
+```
+
+Source: [`packages/web/web-search-openrouter/src/provider.ts:61`](../packages/web/web-search-openrouter/src/provider.ts)

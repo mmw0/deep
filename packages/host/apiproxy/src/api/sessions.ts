@@ -374,4 +374,16 @@ export interface SessionsApi {
    */
   cancel(request: RpcRequest<{ sessionId: SessionId }>): Promise<RpcResponse<{ accepted: true }>>
 
+  /**
+   * Permanently deletes one session: its durable log (and every
+   * session-local artifact) is removed from host storage and the live
+   * session, when attached, is disposed so every client drops it
+   * immediately. A session with a running agent rejects with
+   * `agent-busy` — stop it first. Deleting is irreversible: there is no
+   * archive, no undo, and no recycle stage. A session unknown live and
+   * absent from storage resolves as an idempotent success
+   * (`removed: false`).
+   */
+  delete(request: RpcRequest<{ sessionId: SessionId }>): Promise<RpcResponse<{ removed: boolean }>>
+
 }

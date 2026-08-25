@@ -33,10 +33,17 @@ export interface SessionsPort {
   readonly list: ObservableSnapshot<SessionsPortList>
   /**
    * Create a session on the host.
-   * @param opts - target workspace.
+   * @param opts - target workspace; omitted creates a Workspace-less chat
+   * session in the Host's default project.
    * @returns the new session id.
    */
-  create(opts: { workspaceId: WorkspaceId }): Promise<SessionId>
+  create(opts: { workspaceId?: WorkspaceId }): Promise<SessionId>
+  /**
+   * Re-pull the authoritative Session list baseline (drops locally known
+   * sessions the Host no longer lists — e.g. the wiped sessions of a deleted
+   * Workspace). Optional: narrow test doubles may omit it.
+   */
+  refresh?(): Promise<void>
   /**
    * Select a session as current.
    * @param id - session id (must exist in the list store).

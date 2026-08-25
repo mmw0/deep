@@ -475,7 +475,13 @@ export interface ConversationInjected {
    * Connect the selected Workspace and open its reusable/new blank session.
    * When a blank session is already current, carry its draft to the target.
    */
-  selectWorkspace: (workspaceId: WorkspaceId) => Promise<void>
+   selectWorkspace: (workspaceId: WorkspaceId) => Promise<void>
+  /**
+   * Switch to chat mode: connect the reusable/new Workspace-less chat session
+   * and open it. When a blank session is already current, carry its draft to
+   * the chat session.
+   */
+  selectChat: () => Promise<void>
   /**
    * Framework-bound sources. `composerBlock` is this session's block when a
    * plugin raised one; the reason is the blocker's own localized copy, which
@@ -817,5 +823,9 @@ export interface EmptyWorkspaceOwnerProps {
   /** Currently active workspace (renders a trailing check in the picker list). */
   selectedId?: WorkspaceId | undefined
   onPick: (workspaceId: WorkspaceId) => void
+  /** Switch to chat mode (the default posture): offered as the picker's pinned first entry. */
+  onPickChat?: () => void
+  /** Chat mode is the current posture (the picker's Chat entry carries the check). */
+  chatActive?: boolean
   onClose: () => void
 }

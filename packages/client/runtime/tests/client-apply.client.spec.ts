@@ -94,7 +94,7 @@ describe('runtime client apply', () => {
     bench.sinks?.onConnected?.({ version: '0', cwd: '/f', attachedSessions: 0, home: '/h', canOpenPath: true })
   })
 
-  it('selects the recent Workspace once when the first baselines have no current session', async () => {
+  it('lands in chat mode once the first baselines have no current session', async () => {
     const bench = await mount()
     bench.api.onWorkspaceList = () => Promise.resolve(ok({
       items: [{
@@ -109,7 +109,9 @@ describe('runtime client apply', () => {
 
     const sessions = bench.ctx.get('sessions') as SessionRuntime
     const workspaces = bench.ctx.get('workspaces') as WorkspaceRuntime
-    expect(bench.api.callsOf('session.create')).toEqual([{ workspaceId: 'w-recent' }])
+    // Chat is the default posture: a Workspace-less chat session is minted
+    // even when a recent Workspace exists.
+    expect(bench.api.callsOf('session.create')).toEqual([{}])
     expect(sessions.list.getSnapshot().current).toBe('fk-new')
 
     sessions.clear()

@@ -2,7 +2,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type {
-  DirectoryListing, IApiClient, RpcError,
+  DirectoryListing, FileContent, FileListing, IApiClient, RpcError,
   SessionId, WorkspaceId, WorkspaceView,
 } from '@deepseek-ai/dsh-api-remotes/client'
 import type { SnapshotStore } from '../contract/store.ts'
@@ -55,6 +55,8 @@ export class WorkspaceRuntime implements IWorkspaces {
   private readonly manager: WorkspaceManager
   /** In-flight blank-session creates keyed by workspace (connectWorkspace coalescing). */
   private readonly connecting = new Map<WorkspaceId, Promise<SessionId>>()
+  /** In-flight chat connect (connectChat coalescing). */
+  private connectingChat: Promise<SessionId> | undefined
   /** Guards the runtime-owned one-shot initial-selection subscription. */
   private initialSelectionStarted = false
 
@@ -116,11 +118,44 @@ export class WorkspaceRuntime implements IWorkspaces {
   }
 
   /**
+   * Resolve the session chat mode lands in: reuse the most recent blank
+   * session that no Workspace owns (and the archive set hides), else create a
+   * fresh Workspace-less session on the host — the Host's default project
+   * (chat scratch directory) is its cwd. Coalesced like connectWorkspace so a
+   * double click mints one session, never two.
+   * @returns the reused or newly created session id.
+   */
+  connectChat(): Promise<SessionId> {
+    const inflight = this.connectingChat
+    if (inflight !== undefined) return inflight
+    const attempt = (async (): Promise<SessionId> => {
+      const snapshot = this.list.getSnapshot()
+      const archived = snapshot.archivedSessionIds
+      const owned = new Set<SessionId>(snapshot.items.flatMap(workspace => workspace.sessionIds))
+      const sessions = this.sessions.list.getSnapshot()
+      let reuse: SessionId | undefined
+      let reuseTime = Number.NEGATIVE_INFINITY
+      for (const id of sessions.ids) {
+        const summary = sessions.byId[id]
+        if (summary === undefined || !summary.blank || owned.has(id) || archived.includes(id)) continue
+        if (summary.updatedAt >= reuseTime) {
+          reuse = id
+          reuseTime = summary.updatedAt
+        }
+      }
+      if (reuse !== undefined) return reuse
+      return await this.sessions.create({})
+    })().finally(() => { this.connectingChat = undefined })
+    this.connectingChat = attempt
+    return attempt
+  }
+
+  /**
    * Follow the first complete Workspace/Session baseline and select a default
-   * session exactly once. A restored current session wins; otherwise the most
-   * recent Workspace is connected (reusing or creating its blank session).
-   * Later explicit clears stay cleared instead of retriggering this startup
-   * policy. A failed connect may retry on the next baseline projection.
+   * session exactly once. A restored current session wins; otherwise chat
+   * mode is the default posture — its blank session is connected (reused or
+   * created). Later explicit clears stay cleared instead of retriggering this
+   * startup policy. A failed connect may retry on the next baseline projection.
    * @returns disposer for the baseline subscription; late work cannot navigate after disposal.
    */
   startInitialSelection(): () => void {
@@ -135,13 +170,12 @@ export class WorkspaceRuntime implements IWorkspaces {
       const workspace = this.list.getSnapshot()
       if (!workspace.baselinesReady) return
       const current = this.sessions.list.getSnapshot().current
-      const target = workspace.recentWorkspaceId
-      if (current !== undefined || target === undefined) {
+      if (current !== undefined) {
         state = 'done'
         return
       }
       state = 'connecting'
-      void this.connectWorkspace(target).then(
+      void this.connectChat().then(
         (sessionId) => {
           if (disposed) return
           if (this.sessions.list.getSnapshot().current === undefined) {
@@ -152,7 +186,7 @@ export class WorkspaceRuntime implements IWorkspaces {
         (reason: unknown) => {
           if (disposed) return
           state = 'waiting'
-          console.warn('initial workspace selection failed:', reason)
+          console.warn('initial chat selection failed:', reason)
         },
       )
     }
@@ -167,11 +201,11 @@ export class WorkspaceRuntime implements IWorkspaces {
   /**
    * The shared New Session action behind the shell entry points (sidebar
    * button, workspace browser): resolve the target Workspace — explicit wins,
-   * then the current Session's Workspace, then the recent-Workspace
-   * projection — connect its blank session and navigate there; with no
-   * Workspace at all, clear the selection into the New Session view state.
-   * Connect failures are non-fatal (console diagnostics; the current view
-   * stays usable).
+   * then the current Session's Workspace — connect its blank session and
+   * navigate there; with no Workspace at all, chat mode is the default: its
+   * blank session is connected and opened (never the inert picker-only New
+   * Session view). Connect failures are non-fatal (console diagnostics; the
+   * current view stays usable).
    * @param workspaceId - explicit target Workspace for scoped actions.
    */
   startSession(workspaceId?: WorkspaceId): void {
@@ -180,9 +214,12 @@ export class WorkspaceRuntime implements IWorkspaces {
     const currentWorkspaceId = current === undefined
       ? undefined
       : workspace.items.find(item => item.sessionIds.includes(current))?.workspaceId
-    const target = workspaceId ?? currentWorkspaceId ?? workspace.recentWorkspaceId
+    const target = workspaceId ?? currentWorkspaceId
     if (target === undefined) {
-      this.sessions.clear()
+      void this.connectChat().then(
+        (sessionId) => { this.sessions.open(sessionId) },
+        (reason: unknown) => { console.warn('new chat session failed:', reason) },
+      )
       return
     }
     void this.connectWorkspace(target).then(
@@ -262,13 +299,29 @@ export class WorkspaceRuntime implements IWorkspaces {
   }
 
   /**
-   * Delete one Workspace registration. Sessions, session logs, and the
-   * directory remain Host-owned outside this operation.
+   * Delete one Workspace registration (this deployment's delete also wipes the
+   * workspace folder and its session logs host-side). When the deleted
+   * Workspace owned the current session, chat mode takes over so the user
+   * always lands on a usable input instead of a dead selection.
    * @param workspaceId - target workspace.
    */
   async delete(workspaceId: WorkspaceId): Promise<void> {
+    const ownedCurrent = this.sessions.list.getSnapshot().current
+    const workspace = this.list.getSnapshot().items.find(item => item.workspaceId === workspaceId)
+    const hadCurrent = workspace !== undefined && ownedCurrent !== undefined
+      && workspace.sessionIds.includes(ownedCurrent)
     const result = await this.manager.delete(workspaceId)
     if (!result.ok) throw new Error(`workspace delete failed: ${result.error.code}: ${result.error.message}`)
+    // The Host wiped the workspace's sessions along with its folder; re-pull
+    // the Session baseline so their rows leave every grouping surface now,
+    // not on the next reconnect.
+    void this.sessions.refresh?.().catch(() => {})
+    if (hadCurrent) {
+      void this.connectChat().then(
+        (sessionId) => { this.sessions.open(sessionId) },
+        (reason: unknown) => { console.warn('post-delete chat landing failed:', reason) },
+      )
+    }
   }
 
   /**
@@ -290,6 +343,68 @@ export class WorkspaceRuntime implements IWorkspaces {
   async archiveSession(sessionId: SessionId): Promise<void> {
     const result = await this.manager.archiveSession(sessionId)
     if (!result.ok) throw new Error(`session archive failed: ${result.error.code}: ${result.error.message}`)
+  }
+
+  /**
+   * Permanently delete one session: the Host wipes its durable log and
+   * disposes the live session, so the row leaves every grouping surface
+   * through `host/session-removed`. When the deleted session is the current
+   * selection, chat mode takes over so the user always lands on a usable
+   * input instead of a dead selection.
+   * @param sessionId - session to delete.
+   */
+  async deleteSession(sessionId: SessionId): Promise<void> {
+    const current = this.sessions.list.getSnapshot().current
+    const wasCurrent = current === sessionId
+    const result = await this.manager.deleteSession(sessionId)
+    if (!result.ok) throw new Error(`session delete failed: ${result.error.code}: ${result.error.message}`)
+    // Belt-and-braces baseline re-pull: the host frame usually lands first,
+    // but a slow or dropped stream must not leave a ghost row until the next
+    // reconnect.
+    void this.sessions.refresh?.().catch(() => {})
+    if (wasCurrent) {
+      void this.connectChat().then(
+        (chatSessionId) => { this.sessions.open(chatSessionId) },
+        (reason: unknown) => { console.warn('post-delete chat landing failed:', reason) },
+      )
+    }
+  }
+
+  /**
+   * List one directory level of files AND directories through the Host's
+   * file browser face.
+   * @param path - absolute directory to list; absent lists the storage root.
+   * @param signal - aborts the wire request when the caller supersedes it.
+   * @returns the level's listing with breadcrumb ancestry.
+   */
+  async listFiles(path?: string, signal?: AbortSignal): Promise<FileListing> {
+    const response = await this.api.host.listFiles(path === undefined ? {} : { path }, signal)
+    if (!response.result.ok) throw new DirectoryBrowseError(response.result.error)
+    return response.result.value
+  }
+
+  /**
+   * Read one UTF-8 text file for the in-app viewer/editor.
+   * @param path - absolute file path.
+   * @param signal - aborts the wire request when the caller supersedes it.
+   * @returns the file's decoded text.
+   */
+  async readFile(path: string, signal?: AbortSignal): Promise<FileContent> {
+    const response = await this.api.host.readFile({ path }, signal)
+    if (!response.result.ok) throw new DirectoryBrowseError(response.result.error)
+    return response.result.value
+  }
+
+  /**
+   * Write one UTF-8 text file (create or overwrite) through the Host.
+   * @param path - absolute file path.
+   * @param content - the full new file text.
+   * @returns the durable path and its byte length.
+   */
+  async writeFile(path: string, content: string): Promise<{ path: string; bytes: number }> {
+    const response = await this.api.host.writeFile({ path, content })
+    if (!response.result.ok) throw new DirectoryBrowseError(response.result.error)
+    return response.result.value
   }
 
   /**
@@ -334,13 +449,18 @@ export class WorkspaceRuntime implements IWorkspaces {
     const workspace = this.manager.getSnapshot()
     const sessions = this.sessions.list.getSnapshot()
     const baselinesReady = workspace.phase === 'ready' && sessions.phase === 'ready'
-    // An archived current selection clears into the New Session view state —
-    // a hidden row must not stay open behind the list. Sweeping here covers
-    // every install path with one rule: the local unary echo, another tab's
+    // An archived current selection clears into a fresh chat session —
+    // a hidden row must not stay open behind the list, and the beginner
+    // posture is always a ready chat input. Sweeping here covers every
+    // install path with one rule: the local unary echo, another tab's
     // changed frame, and a reconnect baseline restoring a persisted
     // selection that was archived while this client was away.
     if (sessions.current !== undefined && workspace.archivedSessionIds.includes(sessions.current)) {
       this.sessions.clear()
+      void this.connectChat().then(
+        (sessionId) => { this.sessions.open(sessionId) },
+        (reason: unknown) => { console.warn('post-archive chat landing failed:', reason) },
+      )
     }
     this.list.set({
       items: workspace.items,

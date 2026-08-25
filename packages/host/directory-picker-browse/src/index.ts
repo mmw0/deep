@@ -216,13 +216,24 @@ export default class BrowseDirectoryPicker extends DirectoryPicker {
 
   private async list(path?: string, signal?: AbortSignal): Promise<DirectoryListing> {
     const home = homedir()
+    // Workspace storage root: dedicated per-user directory so agent work
+    // (code, files, folders) stays isolated from the home directory's app
+    // and config trees. Falls back to home when absent.
+    const storageRoot = join(home, 'sandboxes')
+    let startDir = home
+    try {
+      const storageStat = await stat(storageRoot)
+      if (storageStat.isDirectory()) startDir = storageRoot
+    } catch {
+      // No dedicated storage root yet; browsing starts at home as before.
+    }
     // The seam contract takes fully qualified paths only; resolve() would
     // silently rebase a relative or empty wire value under the host process
     // cwd (or, for rooted drive-less Windows forms, its current drive).
     if (path !== undefined && !fullyQualified(path)) {
       throw new DirectoryPickerError('directory-unreadable', path, `cannot list "${path}": not a fully qualified path`)
     }
-    const target = resolve(path ?? home)
+    const target = resolve(path ?? startDir)
     // Stream the level (opendir, one dirent at a time) into a name-sorted
     // window of maxEntries + 1 candidates: memory stays bounded no matter how
     // many children the directory holds, the window keeps the name-sorted

@@ -7,7 +7,7 @@
 import { useId } from 'react'
 import type { ReactNode, RefObject } from 'react'
 import {
-  FishLogo, IconChevronDownOutline14, IconFolderClose16, IconFolderOpen16,
+  FishLogo, IconChevronDownOutline14, IconFolderClose16, IconFolderOpen16, IconNewChatOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { workspaceTitleOf } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ConversationSlotProps } from '../contract/slots.ts'
@@ -28,37 +28,44 @@ export function workspaceLabel(cwd: string): string {
 }
 
 /**
- * The workspace chip (folder + label + chevron), always interactive: before
- * the first message the workspace stays switchable — picking another one
- * moves the New Session flow to that workspace's blank session. Without a
- * label the chip renders its placeholder state: closed folder + the
- * "Choose workspace" call to action.
+ * The mode chip (folder + label + chevron), always interactive: before
+ * the first message the target stays switchable — picking a workspace moves
+ * the New Session flow to that workspace's blank session, and the chat
+ * posture keeps the default Workspace-less session. In chat mode the chip
+ * shows the chat icon + the localized Chat label instead of a folder title,
+ * so the default mode is visible at a glance; clicking it opens the same
+ * mode menu.
  * @param props.label - chip label (see {@link workspaceLabel}); omitted → placeholder.
+ * @param props.chat - chat-mode posture (chat icon + default label when `label` is omitted).
  * @param props.menuOpen - menu expansion echo.
  * @param props.onClick - menu toggle.
  * @returns the chip button element.
  */
-export function WorkspaceChip({ buttonRef, label, menuOpen = false, onClick, t }: {
+export function WorkspaceChip({ buttonRef, label, chat = false, menuOpen = false, onClick, t }: {
   buttonRef?: RefObject<HTMLButtonElement>
   label?: string | undefined
+  chat?: boolean
   menuOpen?: boolean
   onClick?: () => void
   t: HeroTranslate
 }) {
+  const resolved = label ?? (chat ? t('hero.chatMode') : t('hero.chooseWorkspace'))
   return (
     <button
       ref={buttonRef}
       type="button"
       className={css.workspace}
-      aria-label={t('hero.chooseWorkspace')}
+      aria-label={resolved}
       aria-haspopup="menu"
       aria-expanded={menuOpen}
       onClick={onClick}
     >
-      {label === undefined
-        ? <IconFolderClose16 className={css.folder} size={16} />
-        : <IconFolderOpen16 className={css.folder} size={16} />}
-      <span className={css.workspaceLabel}>{label ?? t('hero.chooseWorkspace')}</span>
+      {chat
+        ? <IconNewChatOutline16 className={css.folder} size={16} />
+        : label === undefined
+          ? <IconFolderClose16 className={css.folder} size={16} />
+          : <IconFolderOpen16 className={css.folder} size={16} />}
+      <span className={css.workspaceLabel}>{resolved}</span>
       <IconChevronDownOutline14 className={css.chevron} size={12} />
     </button>
   )

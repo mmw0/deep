@@ -1,5 +1,5 @@
 /**
- * Workspace pick/add flow. WorkspacePickFlow is the reusable core (menu +
+ * Workspace pick/add flow. WorkspacePickFlow is the reusable core (mode menu +
  * path error dialog) consumed directly by WorkspaceBrowser (same package) and
  * wrapped by WorkspacePicker for the conversation empty-state slot
  * registration. Directory picking itself lives in the composed flow package's
@@ -7,11 +7,18 @@
  * adopts the picked path, and owns the error surface. Adding a workspace has
  * exactly one route — pick a host directory, new or existing — because the
  * occupant's own create-folder affordance already covers creating one.
+ *
+ * The mode menu carries two pinned entries above the workspace list: Chat
+ * (switch back to the default Workspace-less chat posture; hero surface only)
+ * and the NIXE quick-create (one click registers `~/NIXE` as the agent
+ * workspace, creating the folder when missing — the beginner route into
+ * agentic mode that never opens a directory browser).
  */
 import type { ReactNode, RefObject } from 'react'
 import { useCallback, useEffect, useState } from 'react'
 import {
-  Button, IconFolderClose16, IconPlusOutline16, Menu, Modal, type MenuEntry,
+  Button, IconFolderClose16, IconFolderOpenOutline16, IconNewChatOutline16, IconPlusOutline16,
+  Menu, Modal, type MenuEntry,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   WorkspaceId, WorkspaceListState, WorkspaceView,
@@ -21,6 +28,21 @@ import type { DirectoryFlowOwnerProps, WorkspacePickerProps } from './contract/s
 import css from './WorkspacePicker.module.css'
 
 const ADD_WORKSPACE = '::add-workspace'
+/** Pinned Chat-mode entry id (hero surface; never a real workspace id). */
+const CHAT_MODE = '::chat-mode'
+/** Pinned NIXE quick-create entry id (never a real workspace id). */
+const NIXE_WORKSPACE = '::nixe-workspace'
+
+/**
+ * Resolve the NIXE agent folder under a Host home path; absent for Windows-style
+ * homes (the deployment pins POSIX paths) and empty homes.
+ * @param home - host account home from `host.describe`.
+ * @returns the absolute `NIXE` path, or undefined when unavailable.
+ */
+export function nixePathOf(home: string | undefined): string | undefined {
+  if (home === undefined || home === '' || home.includes('\\')) return undefined
+  return `${home.replace(/\/+$/, '')}/NIXE`
+}
 
 /** Core flow props: the owner supplies popover control and pick semantics. */
 export interface WorkspacePickFlowProps {
@@ -40,6 +62,12 @@ export interface WorkspacePickFlowProps {
   renderDirectoryFlow: (owner: DirectoryFlowOwnerProps) => ReactNode
   /** A real Workspace was picked or created. */
   onPick: (workspaceId: WorkspaceId) => void
+  /** Switch to chat mode (the default posture); pins the Chat entry when provided. */
+  onPickChat?: (() => void) | undefined
+  /** Chat mode is the current posture (the Chat entry carries the check). */
+  chatActive?: boolean | undefined
+  /** Absolute NIXE folder path; pins the quick-create entry when provided. */
+  nixePath?: string | undefined
   /** Close the popover (outside click / Escape / post-pick). */
   onClose: () => void
   /** Only offer the add action, hide existing workspaces. */
@@ -64,6 +92,9 @@ export function WorkspacePickFlow({
   useDirectoryFlow,
   renderDirectoryFlow,
   onPick,
+  onPickChat,
+  chatActive = false,
+  nixePath,
   onClose,
   addOnly = false,
   side = 'bottom',
@@ -101,17 +132,26 @@ export function WorkspacePickFlow({
   const addEntries: MenuEntry[] = flowAvailable
     ? [{ id: ADD_WORKSPACE, label: t('menu.addWorkspace'), icon: <IconPlusOutline16 size={16} />, disabled: flowBusy }]
     : []
+  // Pinned mode entries lead the menu: Chat (default posture switch, hero
+  // surface only) and the NIXE quick-create (both surfaces).
+  const modeEntries: MenuEntry[] = []
+  if (onPickChat !== undefined) {
+    modeEntries.push({ id: CHAT_MODE, label: t('menu.chatMode'), icon: <IconNewChatOutline16 size={16} />, disabled: flowBusy })
+  }
+  if (nixePath !== undefined) {
+    modeEntries.push({ id: NIXE_WORKSPACE, label: t('menu.nixeWorkspace'), icon: <IconFolderOpenOutline16 size={16} />, disabled: flowBusy })
+  }
   // With workspaces listed, the add action pins below the scroll region
   // (divider + always visible); otherwise it IS the menu.
   const pinAdd = !addOnly && workspaces.length > 0
   const items: MenuEntry[] = pinAdd
-    ? workspaces.map(workspace => ({
+    ? [...modeEntries, ...workspaces.map(workspace => ({
       id: workspace.workspaceId,
       label: workspace.title,
       icon: <IconFolderClose16 size={16} />,
       disabled: flowBusy,
-    }))
-    : addEntries
+    }))]
+    : [...modeEntries, ...addEntries]
   // Nothing listed and nothing to add with (a composition that mounts this
   // package without any directory-picker): an empty popover would claim a
   // choice that does not exist, so the anchor gesture shows nothing at all.
@@ -133,6 +173,31 @@ export function WorkspacePickFlow({
       setErrorOpen(true)
     })
 
+  /**
+   * One-click NIXE: reuse the registered workspace when its canonical path is
+   * already in the list, else register (and materialize) the folder. Adoption
+   * failures reuse the folder-error dialog.
+   */
+  const pickNixe = (): void => {
+    if (nixePath === undefined) return
+    const existing = workspaces.find(workspace => workspace.path === nixePath)
+    if (existing !== undefined) {
+      onPick(existing.workspaceId)
+      return
+    }
+    setPickingFolder(true)
+    void createWorkspace({ path: nixePath })
+      .then((workspace) => {
+        setPickingFolder(false)
+        onPick(workspace.workspaceId)
+      })
+      .catch((reason: unknown) => {
+        setPickingFolder(false)
+        setModalError(reason instanceof Error ? reason.message : String(reason))
+        setErrorOpen(true)
+      })
+  }
+
   const openDirectoryFlow = useCallback((): void => {
     onClose()
     setErrorOpen(false)
@@ -140,16 +205,17 @@ export function WorkspacePickFlow({
     setFlowOpen(true)
   }, [onClose])
 
-  // A menu exists to disambiguate between targets. With no workspaces listed
-  // and the add action the only entry left, the anchor gesture IS that action:
-  // a one-row popover would cost a click and offer nothing to choose between.
-  // The owner's open request is consumed the same way selecting the entry
-  // would consume it (close the popover, raise the flow). An empty list is
-  // only final once the baseline lands — until then the menu stays up with its
-  // loading status instead of jumping into a flow the arriving list would have
-  // made unnecessary; the add-only surface lists nothing and never waits.
+  // A menu exists to disambiguate between targets. With no workspaces listed,
+  // no mode entries, and the add action the only entry left, the anchor
+  // gesture IS that action: a one-row popover would cost a click and offer
+  // nothing to choose between. The owner's open request is consumed the same
+  // way selecting the entry would consume it (close the popover, raise the
+  // flow). An empty list is only final once the baseline lands — until then
+  // the menu stays up with its loading status instead of jumping into a flow
+  // the arriving list would have made unnecessary; the add-only surface lists
+  // nothing and never waits.
   const listSettled = addOnly || workspaceSnapshot.phase === 'ready'
-  const addIsTheOnlyEntry = !pinAdd && listSettled && addEntries.length === 1
+  const addIsTheOnlyEntry = !pinAdd && listSettled && addEntries.length === 1 && modeEntries.length === 0
   // `flowBusy` gates this exactly as it disables the equivalent menu entry: a
   // pick still being adopted owns the surface until it settles.
   useEffect(() => {
@@ -177,6 +243,15 @@ export function WorkspacePickFlow({
       openDirectoryFlow()
       return
     }
+    if (id === CHAT_MODE) {
+      onClose()
+      onPickChat?.()
+      return
+    }
+    if (id === NIXE_WORKSPACE) {
+      pickNixe()
+      return
+    }
     onPick(id as WorkspaceId)
   }
 
@@ -187,7 +262,7 @@ export function WorkspacePickFlow({
         anchor={null}
         items={items}
         {...pinAdd ? { footer: addEntries } : {}}
-        selectedId={selectedId}
+        selectedId={chatActive ? CHAT_MODE : selectedId}
         onSelect={handleSelect}
         onClose={onClose}
         side={side}
@@ -228,12 +303,16 @@ export function WorkspacePicker({
   useWorkspaces,
   selectedId,
   onPick,
+  onPickChat,
+  chatActive,
   onClose,
   createWorkspace,
   useDirectoryFlow,
+  useHostDescription,
   renderSlot,
   t,
 }: WorkspacePickerProps) {
+  const home = useHostDescription(description => description?.home)
   return (
     <WorkspacePickFlow
       t={t}
@@ -245,6 +324,9 @@ export function WorkspacePicker({
       renderDirectoryFlow={owner => renderSlot('conversation.hero.workspace.directoryFlow', owner)}
       selectedId={selectedId}
       onPick={onPick}
+      onPickChat={onPickChat}
+      chatActive={chatActive}
+      nixePath={nixePathOf(home)}
       onClose={onClose}
     />
   )

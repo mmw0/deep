@@ -1,7 +1,7 @@
 /** Test-owned workspaces face: the renderer standard-kit observable plus recorded actions. */
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import type {
-  DirectoryListing, IWorkspaces, SessionId, SnapshotStore, WorkspaceId, WorkspaceListState, WorkspaceView,
+  DirectoryListing, FileContent, FileListing, IWorkspaces, SessionId, SnapshotStore, WorkspaceId, WorkspaceListState, WorkspaceView,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import { workspaceListState } from './fixtures.ts'
 import type { Stabilizer } from './fixtures.ts'
@@ -59,6 +59,18 @@ export class TestWorkspaces implements IWorkspaces {
     const stub = this.stubs.get('connectWorkspace')
     if (stub !== undefined) return await (stub(workspaceId) as Promise<SessionId>)
     return `session-of-${workspaceId}` as SessionId
+  }
+
+  /**
+   * Connect chat mode (recorded). The default resolves a stable chat session
+   * id; stub for cross-session flows.
+   * @returns the connected chat session id.
+   */
+  async connectChat(): Promise<SessionId> {
+    this.calls.push({ method: 'connectChat', args: [] })
+    const stub = this.stubs.get('connectChat')
+    if (stub !== undefined) return await (stub() as Promise<SessionId>)
+    return 'session-of-chat' as SessionId
   }
 
   /**
@@ -211,5 +223,61 @@ export class TestWorkspaces implements IWorkspaces {
     await this.update((draft) => {
       draft.archivedSessionIds = [...draft.archivedSessionIds, sessionId]
     })
+  }
+
+  /**
+   * Permanently delete a session (recorded; default no-op).
+   * @param sessionId - session to delete.
+   */
+  async deleteSession(sessionId: SessionId): Promise<void> {
+    this.calls.push({ method: 'deleteSession', args: [sessionId] })
+    await (this.stubs.get('deleteSession')?.(sessionId) as Promise<void> | undefined)
+  }
+
+  /**
+   * File listing (recorded). The default serves an empty level.
+   * @param path - absolute directory to list; absent lists the storage root.
+   * @returns the level's listing.
+   */
+  async listFiles(path?: string, signal?: AbortSignal): Promise<FileListing> {
+    this.calls.push({ method: 'listFiles', args: [path, signal] })
+    const stub = this.stubs.get('listFiles')
+    if (stub !== undefined) return await (stub(path, signal) as Promise<FileListing>)
+    return {
+      path: path ?? '/home/test',
+      home: '/home/test',
+      crumbs: [
+        { name: '/', path: '/', hidden: false },
+        { name: 'home', path: '/home', hidden: false },
+        { name: 'test', path: path ?? '/home/test', hidden: false },
+      ],
+      entries: [],
+      truncated: false,
+    }
+  }
+
+  /**
+   * File read (recorded). The default serves empty text.
+   * @param path - absolute file path.
+   * @returns the file's decoded text.
+   */
+  async readFile(path: string, signal?: AbortSignal): Promise<FileContent> {
+    this.calls.push({ method: 'readFile', args: [path, signal] })
+    const stub = this.stubs.get('readFile')
+    if (stub !== undefined) return await (stub(path, signal) as Promise<FileContent>)
+    return { path, content: '', size: 0 }
+  }
+
+  /**
+   * File write (recorded). The default echoes the byte length.
+   * @param path - absolute file path.
+   * @param content - the full new file text.
+   * @returns the durable path and its byte length.
+   */
+  async writeFile(path: string, content: string): Promise<{ path: string; bytes: number }> {
+    this.calls.push({ method: 'writeFile', args: [path, content] })
+    const stub = this.stubs.get('writeFile')
+    if (stub !== undefined) return await (stub(path, content) as Promise<{ path: string; bytes: number }>)
+    return { path, bytes: content.length }
   }
 }

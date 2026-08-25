@@ -368,3 +368,31 @@
 .root[data-phase='settling'] .composerSeat {
   visibility: hidden;
 }
+
+/* ── Mobile (≤768px): full-width column, drawer-opener clearance, tighter
+   header chrome, and iOS safe-area aware composer seat ──────────────────── */
+@media (max-width: 768px) {
+  .root {
+    --dsh-composer-side-clearance: 8px;
+  }
+
+  /* The mobile shell's floating sidebar opener sits at the top-left corner;
+     the header keeps its left padding clear of it. */
+  .header {
+    padding: 10px 12px 0 52px;
+  }
+
+  .titleRow {
+    min-height: 36px;
+  }
+
+  /* The hero's centered composer becomes the full mobile width; the workspace
+     row rides its left edge above the drawer clearance. */
+  .heroWorkspaceRow {
+    padding-left: 44px;
+  }
+
+  .composerSeat {
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+}

@@ -6,8 +6,9 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { stat } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { mkdir, rm, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { basename, join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
@@ -140,22 +141,23 @@ export class WorkspaceRegistry extends Service {
   }
 
   /**
-   * Create or reuse a workspace for an existing directory. The path is
-   * canonicalized through `fs.realpath`; a nonexistent path rejects with the
-   * original error and a non-directory rejects. Repeated calls for the same
-   * canonical path return the existing entity without changing its title.
-   * A newly created workspace is prepended to the durable registry order.
-   * Different canonical paths may share a display title.
-   * @param path - Existing directory to own, in any path spelling.
+   * Create or reuse a workspace for a directory, materializing the directory
+   * first when it does not exist yet (the one-click workspace flow — e.g. the
+   * NIXE agent folder — may name a path that was never created or was wiped by
+   * a previous delete). The path is canonicalized through `fs.realpath`; a
+   * non-directory still rejects. Repeated calls for the same canonical path
+   * return the existing entity without changing its title. A newly created
+   * workspace is prepended to the durable registry order. Different canonical
+   * paths may share a display title.
+   * @param path - Directory to own (created when missing), in any path spelling.
    * @param title - Display title used only when a new record is created.
    * @returns the existing or newly durable workspace.
    */
-  // TODO: `title` lost its last production caller when the gateway's
-  // create-by-name branch was deleted
-  // (.agents/notes/implemented/simplification/2026-07-31-one-route-to-add-a-workspace.md);
-  // drop the parameter with its @param clause and the `create(path, title?)`
-  // lines in this package's README pair.
   async create(path: string, title?: string): Promise<Workspace> {
+    // Idempotent materialization: succeeds silently when the directory already
+    // exists; a failure (permissions, path occupied by a file) propagates through
+    // realpath/stat below as the caller-visible error.
+    await mkdir(path, { recursive: true })
     const canonical = await realpathNormalize(path)
     if (!(await stat(canonical)).isDirectory()) {
       throw new Error(`cannot create a workspace at '${canonical}': path is not a directory`)
@@ -251,6 +253,40 @@ export class WorkspaceRegistry extends Service {
       }
       const state = this.requireState()
       await this.setState({ ...state, archivedSessionIds: [...state.archivedSessionIds, sessionId] })
+    })
+  }
+
+  /**
+   * Forget one session everywhere the registry accounts it: the durable
+   * `sessionIds` slot of every Workspace record, the registry-global archive
+   * set, and the in-memory header/path indexes. Used by permanent session
+   * deletion — after the session's storage is wiped no accounting surface may
+   * resurrect its id. Unknown ids are an idempotent no-op.
+   * @param sessionId - The session whose accounting is removed.
+   * @returns resolution after durability.
+   */
+  forgetSession(sessionId: SessionId): Promise<void> {
+    return this.enqueueOperation(async () => {
+      const table = this.requireTable()
+      for (const [workspaceId, record] of [...table.entries()]) {
+        if (!record.sessionIds.includes(sessionId)) continue
+        const entity = this.entities.get(workspaceId)
+        if (entity !== undefined) {
+          // The entity's own write path keeps its cached record and the Host
+          // change feed in step.
+          await entity.detachSession(sessionId)
+        }
+      }
+      const state = this.requireState()
+      if (state.archivedSessionIds.includes(sessionId)) {
+        await this.setState({
+          ...state,
+          archivedSessionIds: state.archivedSessionIds.filter(id => id !== sessionId),
+        })
+      }
+      this.headers.delete(sessionId)
+      this.sessionPaths.delete(sessionId)
+      this.invalidSessionPaths.delete(sessionId)
     })
   }
 
@@ -397,6 +433,7 @@ export class WorkspaceRegistry extends Service {
         `workspace '${id}' was deleted but its pending marker could not be cleared: ${String(error)}`,
       )
     }
+    await deleteWorkspaceArtifacts(this.ctx.logger, entity.path)
     return true
   }
 
@@ -659,5 +696,53 @@ export class WorkspaceRegistry extends Service {
 
 const sameSessionIds = (left: readonly SessionId[], right: readonly SessionId[]): boolean =>
   left.length === right.length && left.every((id, index) => id === right[index])
+
+/**
+ * Best-effort disk wipe accompanying a workspace deletion: removes the
+ * workspace directory itself and its session-log slug directory under
+ * `~/.dsh/sessions`. Guarded so a workspace can never take out the home
+ * directory, hidden system directories, or the application install tree.
+ */
+async function deleteWorkspaceArtifacts(
+  logger: { warn: (message: string) => void } | undefined,
+  workspacePath: string,
+): Promise<void> {
+  try {
+    const home = homedir()
+    const protectedPaths = [join(home, 'my-project')]
+    const isProtected =
+      workspacePath === home ||
+      protectedPaths.some(root => workspacePath === root || workspacePath.startsWith(root + '/')) ||
+      basename(workspacePath).startsWith('.')
+    if (isProtected) {
+      logger?.warn(`workspace '${workspacePath}' is protected; its files were kept on disk`)
+      return
+    }
+    await rm(workspacePath, { recursive: true, force: true })
+    // Session logs live under ~/.dsh/sessions/<projectKey>; replicate the slug
+    // encoding (separators -> '-', wrapped as '--<slug>--') to remove them too.
+    let readable = ''
+    let separatorRun = false
+    for (let i = 0; i < workspacePath.length; i++) {
+      const ch = workspacePath.charAt(i)
+      if (ch === '/' || ch === '\\' || ch === ':') {
+        if (!separatorRun) readable += '-'
+        separatorRun = true
+      } else if (ch !== '~' && /^[A-Za-z0-9._-]$/.test(ch)) {
+        readable += ch
+        separatorRun = false
+      } else {
+        readable += '~' + workspacePath.charCodeAt(i).toString(16).toUpperCase().padStart(4, '0')
+        separatorRun = false
+      }
+    }
+    const slug = readable.replace(/^-+/, '') || 'root'
+    const projectKey = `--${slug.slice(0, 251)}--`
+    await rm(join(home, '.dsh', 'sessions', projectKey), { recursive: true, force: true })
+  } catch (error) {
+    // Registry deletion already succeeded; disk cleanup is best-effort only.
+    logger?.warn(`workspace '${workspacePath}' disk cleanup failed: ${String(error)}`)
+  }
+}
 
 export default WorkspaceRegistry

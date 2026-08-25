@@ -393,29 +393,49 @@
         thresholds: [3, 5, 8]
         argumentsPreviewChars: 500
 
-    # Every mode enables the stable model-facing web_search tool. DeepSeek search
-    # resolves the same DEEPSEEK_API_KEY credential the Models page manages for
-    # chat, at each search; its Messages endpoint is separate from the
-    # chat-completions endpoint, so it takes its own base-URL override. Fetch stays
-    # disabled and no fetch provider is mounted: that provider defers SSRF
-    # protection and the model would choose the request target. Search is a full
-    # auxiliary model request with server-side retrieval, so this shipped DeepSeek
-    # route gets 60s while the provider-neutral tool default remains 30s.
+    # Every mode enables the stable model-facing web_search tool. The provider
+    # cascades: keyless Bing retrieval answers in well under a second, and only
+    # a blocked or empty Bing page falls back to the OpenRouter `:online` model
+    # call, which resolves the same OPENROUTER_API_KEY credential the Models
+    # page manages for chat — one key powers conversation, search, and the
+    # browser tool below. The fallback model is a zero-price route, so searches
+    # never consume the free tier's daily request quota. Fetch stays disabled
+    # and no fetch provider is mounted: that provider defers SSRF protection
+    # and the model would choose the request target. The 120s budget gives the
+    # slow online fallback room to finish while the Bing stage keeps normal
+    # searches effectively instant.
     - id: web
       name: '@deepseek-ai/dsh-web'
       config:
-        searchProvider: deepseek-official
+        searchProvider: openrouter-online
 
-    - id: web-search-deepseek
-      name: '@deepseek-ai/dsh-web-search-deepseek'
+    - id: web-search-openrouter
+      name: '@deepseek-ai/dsh-web-search-openrouter'
       config:
-        apiKeyEnv: DEEPSEEK_API_KEY
+        apiKeyEnv: OPENROUTER_API_KEY
+        model: stealth/ox-alpha
 
     - id: tool-web
       name: '@deepseek-ai/dsh-tool-web'
       config:
         fetch: false
-        searchTimeoutMs: 60000
+        searchTimeoutMs: 120000
+
+    # The browser_use tool: a real headless Chromium driven by the browser-use
+    # Python agent (https://github.com/browser-use/browser-use), planned by the
+    # same OPENROUTER_API_KEY credential. Browser tasks take minutes — the free
+    # planner model is deliberate but slow — so the cooperative budget is 600s
+    # (the timeout policy enforces it against the subprocess's forwarded
+    # cancellation signal). pythonPath must name an interpreter with
+    # `browser_use` importable; the wrapper script ships inside the package.
+    - id: tool-browser
+      name: '@deepseek-ai/dsh-tool-browser'
+      config:
+        pythonPath: python3
+        model: stealth/ox-alpha
+        apiKeyEnv: OPENROUTER_API_KEY
+        maxSteps: 15
+        timeoutMs: 600000
 
     # ── rows every mode mounts, whose values each overlay may state ──────────────
 

@@ -12,8 +12,9 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { IconPanelLeftOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRenderSlots, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
-import { computeColumns, SIDEBAR_AUTO_COLLAPSE, SIDEBAR_DEFAULT } from './columns.ts'
+import { computeColumns, MOBILE_DRAWER_BREAKPOINT, MOBILE_DRAWER_WIDTH, SIDEBAR_AUTO_COLLAPSE, SIDEBAR_DEFAULT } from './columns.ts'
 import type { createLayoutStore } from './stores.ts'
 import css from './AppFrame.module.css'
 
@@ -135,11 +136,26 @@ export function AppFrame({
   // absorbs the squeeze.
   const narrow = viewport < SIDEBAR_AUTO_COLLAPSE
   useEffect(() => { actions.setNarrow(narrow) }, [actions, narrow])
-  const sidebarCollapsed = narrow ? !panels.narrowExpanded : panels.sidebar === 0
+  // Mobile (≤ MOBILE_DRAWER_BREAKPOINT): the sidebar stops being a rail that
+  // squeezes the center and becomes a full-height overlay drawer with a
+  // dismiss backdrop. `narrowExpanded` doubles as the drawer-open flag —
+  // toggleSidebar flips exactly that below the auto-collapse breakpoint, so
+  // the sidebar toggle button, the hamburger, and the backdrop all drive one
+  // state. Crossing the breakpoint in either direction closes the drawer.
+  const mobile = viewport < MOBILE_DRAWER_BREAKPOINT
+  const drawerOpen = mobile && panels.narrowExpanded
+  // While the drawer is open the grid still carries the (hidden) sidebar
+  // column at the drawer width so the transition back to the rail stays
+  // smooth; otherwise the mobile grid pins the sidebar track to zero.
+  const sidebarCollapsed = mobile ? !drawerOpen : narrow ? !panels.narrowExpanded : panels.sidebar === 0
   const sidebarPreference = sidebarCollapsed
     ? 0
     : panels.sidebar === 0 ? SIDEBAR_DEFAULT : panels.sidebar
-  const cols = computeColumns(viewport, sidebarPreference, detailsSession === undefined ? 0 : panels.details)
+  const cols = computeColumns(
+    viewport,
+    mobile && !drawerOpen ? 0 : sidebarPreference,
+    mobile ? 0 : detailsSession === undefined ? 0 : panels.details,
+  )
   const colsRef = useRef(cols)
   colsRef.current = cols
 
@@ -165,18 +181,22 @@ export function AppFrame({
     <div
       ref={frameRef}
       className={css.frame}
-      style={{ gridTemplateColumns: `${cols.sidebar}px minmax(0, 1fr) ${cols.details}px` }}
+      style={{ gridTemplateColumns: mobile ? `${drawerOpen ? MOBILE_DRAWER_WIDTH : 0}px minmax(0, 1fr) 0px` : `${cols.sidebar}px minmax(0, 1fr) ${cols.details}px` }}
       data-sidebar-collapsed={sidebarCollapsed || undefined}
       data-details-collapsed={cols.details === 0 || undefined}
       data-dragging={dragging || undefined}
+      data-mobile={mobile || undefined}
+      data-drawer-open={drawerOpen || undefined}
     >
-      <div className={css.sidebarCol}>
+      <div className={css.sidebarCol} aria-hidden={mobile || undefined}>
         {/* Render-site slot call with live concession output: a closed
             sidebar keeps the mounted slot at the compact-rail width, and the
             component sees its rendered state as owner params decided here
             (collapsed follows the resolved rail, so a derived auto-collapse
-            renders the rail UI too). */}
-        {renderSlot('sidebar', {
+            renders the rail UI too). On mobile the column itself is hidden
+            (the drawer renders the sidebar); the subtree stays mounted so
+            switching back to tablet/desktop is seamless. */}
+        {!mobile && renderSlot('sidebar', {
           collapsed: sidebarCollapsed,
           width: cols.sidebar,
         })}
@@ -193,9 +213,39 @@ export function AppFrame({
       <div className={css.overlayLayer} data-shell-overlay>
         {renderSlot('shell.overlay', {})}
       </div>
-      {/* The collapsed rail is fixed-width: no resize handle while closed. */}
-      {!sidebarCollapsed && <DragHandle side="sidebar" left={cols.sidebar} onStart={onSidebarStart} onDrag={onSidebarDrag} onEnd={onDragEnd} />}
-      {cols.details > 0 && <DragHandle side="details" left={viewport - cols.details} onStart={onDetailsStart} onDrag={onDetailsDrag} onEnd={onDragEnd} />}
+      {/* Mobile drawer: the sidebar as a slide-in overlay plus its dismiss
+          backdrop and the floating opener while closed. Desktop/tablet
+          renders nothing here. */}
+      {mobile && (
+        <>
+          {!drawerOpen && (
+            <button
+              type="button"
+              className={css.mobileMenuButton}
+              aria-label="Open sidebar"
+              onClick={() => { actions.toggleSidebar() }}
+            >
+              <IconPanelLeftOutline16 size={18} />
+            </button>
+          )}
+          <div
+            className={css.drawerBackdrop}
+            data-open={drawerOpen || undefined}
+            onClick={() => { actions.toggleSidebar() }}
+            aria-hidden
+          />
+          <div className={css.drawer} data-open={drawerOpen || undefined} role="dialog" aria-label="Sidebar">
+            {renderSlot('sidebar', {
+              collapsed: false,
+              width: MOBILE_DRAWER_WIDTH,
+            })}
+          </div>
+        </>
+      )}
+      {/* The collapsed rail is fixed-width: no resize handle while closed.
+          Mobile has no drag handles at all (drawer + auto-closed details). */}
+      {!mobile && !sidebarCollapsed && <DragHandle side="sidebar" left={cols.sidebar} onStart={onSidebarStart} onDrag={onSidebarDrag} onEnd={onDragEnd} />}
+      {!mobile && cols.details > 0 && <DragHandle side="details" left={viewport - cols.details} onStart={onDetailsStart} onDrag={onDetailsDrag} onEnd={onDragEnd} />}
     </div>
   )
 }

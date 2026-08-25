@@ -12,6 +12,9 @@
  * service; sessions that have already logged a selection remain unchanged.
  */
 
+import { mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
@@ -34,6 +37,24 @@ declare module '@deepseek-ai/cordis' {
   interface Context {
     /** The host-side ApiProxy implementation (the transport-agnostic gateway face). */
     apiProxy: ApiProxy
+  }
+}
+
+/**
+ * Beginner chat mode's default project: sessions created without a Workspace
+ * or an explicit cwd land in a hidden scratch directory under ~/.dsh, kept out
+ * of the user's visible folders. Materialized eagerly so the first turn's
+ * shell has a real directory to run in; falls back to the process cwd when the
+ * home directory is not writable.
+ * @returns the absolute chat scratch directory (existing).
+ */
+function chatProjectDir(): string {
+  try {
+    const dir = join(homedir(), '.dsh', 'chat')
+    mkdirSync(dir, { recursive: true })
+    return dir
+  } catch {
+    return process.cwd()
   }
 }
 
@@ -98,7 +119,7 @@ export class ApiProxyService extends Service implements ApiProxy {
     const api = createApiProxy(ctx, {
       defaultModelSelection: () => ctx.agentDefaultModel.currentSelection(),
       saveDefaultModelSelection: selection => ctx.agentDefaultModel.saveSelection(selection),
-      cwd: process.cwd(),
+      cwd: chatProjectDir(),
       ...config.nativeOpen === undefined ? {} : { canOpenPath: () => config.nativeOpen as boolean },
       ...(config.sessionExportCompressionLevel === undefined
         ? {}

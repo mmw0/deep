@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -392,15 +392,21 @@ describe('WorkspaceRegistry create and lookup', () => {
     expect(registry.list()).toEqual([second, first])
   })
 
-  it('rejects nonexistent and non-directory paths without changing order', async () => {
+  it('materializes missing paths, rejects non-directory targets, and keeps order stable', async () => {
     const parent = await makeDir('invalid')
     const file = join(parent, 'plain.txt')
     await writeFile(file, 'file')
     const { registry } = await harness()
-    await expect(registry.create(join(parent, 'missing'))).rejects.toMatchObject({ code: 'ENOENT' })
-    await expect(registry.create(file)).rejects.toThrow(/not a directory/)
-    await expect(registry.resolveByPath(join(parent, 'missing'))).rejects.toMatchObject({ code: 'ENOENT' })
-    expect(registry.list()).toEqual([])
+    // One-click create: a missing path is materialized (mkdir -p) rather than
+    // rejected — the NIXE quick-create flow names paths that do not exist yet.
+    const created = await registry.create(join(parent, 'missing'))
+    expect(created.path).toBe(join(parent, 'missing'))
+    expect(await stat(created.path).then(info => info.isDirectory(), () => false)).toBe(true)
+    // A path occupied by a regular file still refuses adoption (mkdir
+    // EEXIST on POSIX; the follow-up realpath/stat path rejects elsewhere).
+    await expect(registry.create(file)).rejects.toThrow(/EEXIST|not a directory/)
+    await expect(registry.resolveByPath(join(parent, 'missing-file'))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(registry.list()).toEqual([created])
   })
 
   it('rolls back the provisional cache when the record write fails', async () => {
@@ -476,7 +482,7 @@ describe('WorkspaceRegistry create and lookup', () => {
     })
   })
 
-  it('deletes only the registration and leaves its directory and session headers untouched', async () => {
+  it('deletes the registration together with its directory and session artifacts', async () => {
     const dir = await makeDir('delete-registration')
     const result = await harness({ sessions: [header('kept-session', dir)] })
     const workspace = await result.registry.create(dir)
@@ -488,11 +494,14 @@ describe('WorkspaceRegistry create and lookup', () => {
     expect(result.registry.list()).toEqual([])
     expect(storedState(result.pool)).toEqual({ initialized: true, workspaceIds: [], archivedSessionIds: [] })
     expect(result.pool.media.get('workspace')!.tables.get('workspaces')!.has(workspace.id)).toBe(false)
-    await expect(realpath(dir)).resolves.toBe(dir)
+    // This deployment's delete is TOTAL: the workspace directory is wiped
+    // from disk along with the registration and its session logs.
+    await expect(realpath(dir)).rejects.toMatchObject({ code: 'ENOENT' })
     expect(result.list).toHaveBeenCalledTimes(1)
     expect(result.load).not.toHaveBeenCalled()
     expect(result.inspect).not.toHaveBeenCalled()
 
+    // Re-registering the wiped path materializes a fresh, empty Workspace.
     const reregistered = await result.registry.create(dir)
     expect(reregistered.id).not.toBe(workspace.id)
     expect(reregistered.path).toBe(dir)

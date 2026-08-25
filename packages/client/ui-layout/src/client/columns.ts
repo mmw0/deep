@@ -31,6 +31,12 @@ export const SIDEBAR_COLLAPSED = 56
  * LG breakpoint); a manual toggle below it re-expands over the squeezed center
  * (stores.ts narrowExpanded). */
 export const SIDEBAR_AUTO_COLLAPSE = 1024
+/** Viewport width below which the sidebar becomes a mobile overlay drawer:
+ * the center column keeps the full viewport width, and the drawer slides
+ * over it with a dismiss backdrop instead of squeezing. */
+export const MOBILE_DRAWER_BREAKPOINT = 768
+/** The mobile drawer's slide-in width (within SIDEBAR_MIN..SIDEBAR_DEFAULT). */
+export const MOBILE_DRAWER_WIDTH = 288
 /** Details drag clamp floor. */
 export const DETAILS_MIN = 300
 /** Details drag clamp ceiling. */

@@ -117,3 +117,85 @@
 .overlayLayer > * {
   pointer-events: auto;
 }
+
+/* ── Mobile overlay drawer (viewport < MOBILE_DRAWER_BREAKPOINT) ────────── */
+
+/* Floating drawer opener: fixed at the top-left corner over the conversation
+   column. The conversation header adds matching mobile left padding so the
+   button never covers the session title. */
+.mobileMenuButton {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-float, var(--dsw-alias-bg-base));
+  color: var(--dsw-alias-text-secondary);
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  transition: background var(--ds-transition-duration-fast) ease, color var(--ds-transition-duration-fast) ease;
+}
+
+.mobileMenuButton:hover {
+  color: var(--dsw-alias-text-primary);
+}
+
+/* Dim-and-dismiss layer behind the drawer; transparent and click-through
+   while closed so the conversation stays fully interactive. */
+.drawerBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.32);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--ds-transition-duration-slow) var(--ds-ease-in-out);
+}
+
+.drawerBackdrop[data-open] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* The slide-in drawer itself: full height, its own background and border,
+   clipping the mounted sidebar subtree at the drawer width. */
+.drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 41;
+  width: 288px;
+  overflow: hidden;
+  background: var(--dsw-specific-sidebar-fill);
+  border-right: 1px solid var(--dsw-alias-border-l1);
+  transform: translateX(-100%);
+  visibility: hidden;
+  transition:
+    transform var(--ds-transition-duration-slow) var(--ds-ease-in-out),
+    visibility 0s linear var(--ds-transition-duration-slow);
+}
+
+.drawer[data-open] {
+  transform: translateX(0);
+  visibility: visible;
+  transition: transform var(--ds-transition-duration-slow) var(--ds-ease-in-out);
+}
+
+/* The in-flow sidebar column is not the drawer's layout host on mobile. */
+.frame[data-mobile] .sidebarCol {
+  border-right: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawerBackdrop,
+  .drawer {
+    transition: none;
+  }
+}

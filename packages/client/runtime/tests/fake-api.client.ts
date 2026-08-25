@@ -156,6 +156,7 @@ export class FakeApiClient implements IApiClient {
     attachment: (payload: unknown) => this.record('session.attachment', payload, this.onAttachment(payload)),
     updateQueue: (payload: unknown) => this.record('session.updateQueue', payload, this.onUpdateQueue(payload)),
     cancel: (payload: unknown) => this.record('session.cancel', payload, this.onCancel(payload)),
+    delete: (payload: unknown) => this.record('session.delete', payload, Promise.resolve(ok({ removed: true }))),
   }
 
   onSubagentList: (payload: unknown) => Promise<RpcResponse<{ entries: never[]; parentAvailable: boolean }>>
@@ -181,6 +182,19 @@ export class FakeApiClient implements IApiClient {
     listDirectory: (payload: unknown) => this.record('host.listDirectory', payload, this.onListDirectory(payload)),
     createDirectory: (payload: unknown) => this.record('host.createDirectory', payload, this.onCreateDirectory(payload)),
     openPath: (payload: unknown) => this.record('host.openPath', payload, this.onOpenPath(payload)),
+    listFiles: (payload: unknown) => this.record('host.listFiles', payload, Promise.resolve(ok({
+      path: (payload as { path?: string }).path ?? '/f',
+      home: '/f',
+      crumbs: [{ name: '/', path: '/', hidden: false }],
+      entries: [],
+      truncated: false,
+    }))),
+    readFile: (payload: { path: string }) => this.record('host.readFile', payload, Promise.resolve(ok({
+      path: payload.path, content: '', size: 0,
+    }))),
+    writeFile: (payload: { path: string; content: string }) => this.record('host.writeFile', payload, Promise.resolve(ok({
+      path: payload.path, bytes: payload.content.length,
+    }))),
   }
 
   // The archive-set field defaults at the binding below so list stubs keep

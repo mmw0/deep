@@ -12,8 +12,8 @@ import {
 /** Group key for Sessions outside every Workspace. */
 export const UNGROUPED_KEY = ''
 
-/** Display label for the ungrouped bucket row. */
-export const UNGROUPED_LABEL = 'Ungrouped'
+/** Display label for the ungrouped bucket row (the Chat group). */
+export const UNGROUPED_LABEL = 'Chat'
 
 /** One top-level session row in a group or the flat list. */
 export interface SessionNode {

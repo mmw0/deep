@@ -61,6 +61,7 @@ function scriptedApi(overrides: {
       }),
       updateQueue: r => ok(r, { accepted: true as const }),
       cancel: r => ok(r, { accepted: true as const }),
+      delete: r => ok(r, { removed: false }),
       ...overrides.sessions,
     },
     subagents: {
@@ -76,6 +77,9 @@ function scriptedApi(overrides: {
       }),
       pickDirectory: r => ok(r, { path: null }),
       listDirectory: r => ok(r, { path: '/t', home: '/t', crumbs: [], entries: [], truncated: false }),
+      listFiles: r => ok(r, { path: '/t', home: '/t', crumbs: [], entries: [], truncated: false }),
+      readFile: r => ok(r, { path: r.payload.path, content: '', size: 0 }),
+      writeFile: r => ok(r, { path: r.payload.path, bytes: 0 }),
       createDirectory: r => ok(r, { path: '/t/new' }),
       openPath: r => ok(r, { opened: true as const }),
       ...overrides.host,

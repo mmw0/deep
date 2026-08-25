@@ -352,3 +352,13 @@ export const sessionCancelRequestSchema = z.object({
 export const sessionCancelValueSchema = z.object({
   accepted: z.literal(true),
 }) satisfies z.ZodType<Wire<ResponseValue<'session.cancel'>>>
+
+/** session.delete request payload (the session whose storage is permanently removed). */
+export const sessionDeleteRequestSchema = z.object({
+  sessionId: sessionIdSchema,
+}) satisfies z.ZodType<Wire<RequestPayload<'session.delete'>>>
+
+/** session.delete response value: whether stored bytes existed and were removed. */
+export const sessionDeleteValueSchema = z.object({
+  removed: z.boolean(),
+}) satisfies z.ZodType<Wire<ResponseValue<'session.delete'>>>

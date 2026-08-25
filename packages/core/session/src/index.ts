@@ -1065,6 +1065,25 @@ export class SessionStore extends Service {
   }
 
   /**
+   * Force-remove one live session from the store and emit its paired
+   * `session/disposed` event so every attached client drops it immediately.
+   *
+   * Used by workspace deletion: a workspace whose directory (and session
+   * logs) were wiped must not leave ghost sessions attached in memory —
+   * those would otherwise reappear as "Ungrouped" rows in every client.
+   * Deferred while an announcement or append is in flight (the detach lands
+   * when that publication unwinds), mirroring `enter`'s rollback path.
+   * @param id - Session to remove.
+   * @returns true when a live session was removed; false when unknown here.
+   */
+  forceDispose(id: SessionId): boolean {
+    const entry = this.store.get(id)
+    if (entry === undefined) return false
+    entry.detach()
+    return true
+  }
+
+  /**
    * Create a live child session from a stable prefix of a live source.
    * `boundary` is an inclusive source event seq; omitted means the source's
    * current last event. The selected slice may end with a between-turn event

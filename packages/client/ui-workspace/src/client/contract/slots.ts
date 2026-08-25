@@ -30,6 +30,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {
   SessionId, SessionSearchResultItem, WorkspaceId, WorkspaceView,
+  FileContent, FileListing,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { createWorkspaceViewStore } from '../stores.ts'
 
@@ -130,6 +131,22 @@ export type WorkspaceBrowserInjected = {
    */
   archiveSession: (sessionId: SessionId) => Promise<void>
   /**
+   * Permanently delete one Session: the Host wipes its durable log and every
+   * session-local artifact, then disposes the live session so its row leaves
+   * every client immediately. Deleting the current session lands the
+   * selection in a fresh chat. Irreversible — no undo, no recycle stage.
+   */
+  deleteSession: (sessionId: SessionId) => Promise<void>
+  /**
+   * List one directory level of files AND directories through the Host's
+   * file browser face (the in-app Files view).
+   */
+  listFiles: (path?: string, signal?: AbortSignal) => Promise<FileListing>
+  /** Read one UTF-8 text file for the in-app viewer/editor. */
+  readFile: (path: string, signal?: AbortSignal) => Promise<FileContent>
+  /** Write one UTF-8 text file (create or overwrite) through the Host. */
+  writeFile: (path: string, content: string) => Promise<{ path: string; bytes: number }>
+  /**
    * Reorder a session inside its Workspace account (DOM-insertBefore
    * semantics: omitted anchor appends to the end). The view refreshes from
    * the Host response/changed frame; failures leave the order unchanged.
@@ -156,16 +173,25 @@ export type WorkspaceBrowserProps =
 export type WorkspacePickerInjected = DirectoryPickingInjected & {
   /** Adopt a picked host directory as a real Workspace before targeting a Session. */
   createWorkspace: (input: { path: string }) => Promise<WorkspaceView>
+  hooks: DirectoryPickingInjected['hooks'] & {
+    /** Current generation's Host description (the NIXE quick-create resolves the home path from it). */
+    hostDescription: HostDescriptionSource
+  }
 }
 
+/** The picker's Host-description hook: bound by the slot renderer from the injected source. */
+export type PickerHostDescriptionHook = PropsHooks<Pick<WorkspacePickerInjected['hooks'], 'hostDescription'>>
+
 /**
- * Full picker props: the owner share plus the creation callback and the
- * locale seat. The two picker holes (blank-session hero / New-Session view)
- * share one owner currency, so one composed type serves both registrations.
+ * Full picker props: the owner share (mode switches included) plus the
+ * creation callback and the locale seat. The two picker holes (blank-session
+ * hero / New-Session view) share one owner currency, so one composed type
+ * serves both registrations.
  */
 export type WorkspacePickerProps =
   PropsRuntime<'conversation.hero.workspace'>
   & PropsRenderSlots<'conversation.hero.workspace.directoryFlow'>
   & Omit<WorkspacePickerInjected, 'hooks'>
   & DirectoryPickingHooks
+  & PickerHostDescriptionHook
   & PropsLocale<'workspace'>

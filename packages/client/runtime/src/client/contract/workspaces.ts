@@ -6,7 +6,7 @@
  * the concrete class. Widening this interface is the explicit act of
  * widening what features may do to the workspaces domain.
  */
-import type { DirectoryListing, SessionId, WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-remotes/client'
+import type { DirectoryListing, FileContent, FileListing, SessionId, WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-remotes/client'
 import type { WorkspaceListState } from '../workspaces/service.ts'
 import type { ObservableSnapshot } from './store.ts'
 
@@ -20,6 +20,12 @@ export interface IWorkspaces {
    * @returns the connected session id.
    */
   connectWorkspace(workspaceId: WorkspaceId): Promise<SessionId>
+  /**
+   * Connect chat mode: reuse the most recent blank Workspace-less session, or
+   * mint one in the Host's default project. The default New Session posture.
+   * @returns the connected session id.
+   */
+  connectChat(): Promise<SessionId>
   /**
    * The New Session flow: connect the explicit, current-Session, or recent
    * Workspace and open the resulting session; failures surface on the session
@@ -91,4 +97,34 @@ export interface IWorkspaces {
    * @param sessionId - session to archive.
    */
   archiveSession(sessionId: SessionId): Promise<void>
+  /**
+   * Permanently delete one session: the Host wipes its durable log (and every
+   * session-local artifact) and disposes the live session, so its row leaves
+   * every grouping surface immediately. Deleting the current session lands
+   * the selection in a fresh chat. Irreversible — there is no undo.
+   * @param sessionId - session to delete.
+   */
+  deleteSession(sessionId: SessionId): Promise<void>
+  /**
+   * List one directory level of files AND directories through the Host's
+   * file browser face (the in-app Files view).
+   * @param path - absolute directory to list; absent lists the storage root.
+   * @param signal - aborts the wire request when the caller supersedes it.
+   * @returns the level's listing with breadcrumb ancestry.
+   */
+  listFiles(path?: string, signal?: AbortSignal): Promise<FileListing>
+  /**
+   * Read one UTF-8 text file for the in-app viewer/editor.
+   * @param path - absolute file path.
+   * @param signal - aborts the wire request when the caller supersedes it.
+   * @returns the file's decoded text.
+   */
+  readFile(path: string, signal?: AbortSignal): Promise<FileContent>
+  /**
+   * Write one UTF-8 text file (create or overwrite) through the Host.
+   * @param path - absolute file path.
+   * @param content - the full new file text.
+   * @returns the durable path and its byte length.
+   */
+  writeFile(path: string, content: string): Promise<{ path: string; bytes: number }>
 }

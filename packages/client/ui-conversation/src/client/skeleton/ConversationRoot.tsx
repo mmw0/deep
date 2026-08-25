@@ -14,7 +14,7 @@ export type ConversationRootProps = ConversationSlotProps
 
 export function ConversationRoot({
   sessionId, useSession, useSessions, useWorkspaces, useInput, useComposerBlock,
-  renderSlot, renderSlotChain, selectWorkspace, t,
+  renderSlot, renderSlotChain, selectWorkspace, selectChat, t,
 }: ConversationRootProps) {
   const openState = useSession(s => s.openState)
   const composerPhase = useSession(s => s.composerPhase)
@@ -81,18 +81,19 @@ export function ConversationRoot({
   const zone: InputZone | undefined =
     session === undefined || inputState === undefined ? undefined : { session, input: inputState }
 
-  // The chip is a selector; label resolution walks the flow top-down:
+  // The chip is a mode selector; label resolution walks the flow top-down:
   //   1. a just-picked workspace (pending) → its title;
-  //   2. cold start, no session yet → placeholder ("Choose workspace");
-  //   3. the blank session's workspace is in the list → its title;
-  //   4. list still loading → cwd folder name bridges so the title does not
-  //      flash on refresh (empty cwd → placeholder);
-  //   5. list ready but no owning workspace (deleted from the sidebar) →
-  //      placeholder, never the deleted folder's name via cwd.
+  //   2. the session's workspace is in the list → its title;
+  //   3. list still loading → cwd folder name bridges so the title does not
+  //      flash on refresh (empty cwd → chat posture);
+  //   4. no owning workspace (chat mode, cold start, or the workspace vanished
+  //      from the sidebar) → the localized Chat label: chat is the default
+  //      posture, never the legacy "Choose workspace" dead end.
+  const chatMode = sessionWorkspace === undefined
   const chipTitle = pendingWorkspace?.title
-    ?? (sessionId === undefined
+    ?? (sessionId === undefined || sessionWorkspace === undefined
       ? undefined
-      : sessionWorkspace?.title
+      : sessionWorkspace.title
         ?? (workspaces.phase === 'ready' || cwd === undefined || cwd === ''
           ? undefined
           : workspaceLabel(cwd)))
@@ -102,6 +103,7 @@ export function ConversationRoot({
       <WorkspaceChip
         buttonRef={pickerAnchor}
         label={chipTitle}
+        chat={chipTitle === undefined}
         menuOpen={pickerOpen}
         onClick={() => { setPickerOpen(open => !open) }}
         t={t}
@@ -117,21 +119,27 @@ export function ConversationRoot({
             setPendingWorkspaceId(current => current === workspaceId ? undefined : current)
           })
         },
+        onPickChat: () => {
+          setPickerOpen(false)
+          setPendingWorkspaceId(undefined)
+          void selectChat()
+        },
+        chatActive: chipTitle === undefined,
         onClose: () => { setPickerOpen(false) },
       })}
       {renderSlot('conversation.hero.agentPreset', {})}
     </div>
   )
 
-  // The placeholder chip ("Choose workspace") and the Workspace-trigger input travel
-  // together: no workspace picked yet (cold start, no session at all), or a
-  // blank session whose workspace vanished (deleted from the sidebar). The
+  // The chat-mode chip ("Chat") and the enabled composer travel together in
+  // the default posture: a session with no owning Workspace (or cold start,
+  // before the auto chat selection lands) is chat mode, ready to type. The
   // bar is ONE session-maybe slot rendered unconditionally — inert is a prop,
   // not a different tree, so the textarea DOM survives the transition.
-  const inert = sessionId === undefined || (hero && chipTitle === undefined)
+  const inert = sessionId === undefined
   // A raised block is the same inert posture with the blocker's own reason:
-  // one disabled textarea, never a second tree. The no-workspace state wins
-  // when both hold — picking a workspace is the earlier prerequisite.
+  // one disabled textarea, never a second tree. The no-session state wins
+  // when both hold — the auto chat selection is the earlier prerequisite.
   const blocked = !inert && composerBlock !== undefined
   const inputBar = renderSlot('conversation.composer.bar', {
     variant: hero ? 'hero' : 'composer',
@@ -147,7 +155,9 @@ export function ConversationRoot({
         // block keeps the model seat live because choosing a model is how the
         // user clears it.
         ? { blocked: composerBlock, placeholder: composerBlock.reason }
-        : hero ? { placeholder: t('placeholder.hero') } : {}),
+        : hero
+          ? { placeholder: chatMode || chipTitle === undefined ? t('placeholder.chat') : t('placeholder.hero') }
+          : {}),
     overlay: renderSlot('conversation.input.overlay', {}),
     leftItems: zone === undefined ? null : renderSlot('conversation.input.left', zone),
     rightItems: zone === undefined ? null : renderSlot('conversation.input.right', zone),

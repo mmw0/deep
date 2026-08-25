@@ -45,6 +45,16 @@ export interface RpcErrorDetailsMap {
   'directory-exists': { path: string }
   'directory-create-failed': { path: string }
   'directory-picker-unavailable': { capability: string }
+  /** host.listFiles target exists but is not a directory. */
+  'path-not-file': { path: string }
+  /** host.readFile target is absent, unreadable, or not a regular file. */
+  'file-not-found': { path: string }
+  /** host.readFile target exceeds the in-app editor's read cap. */
+  'file-too-large': { path: string; size: number }
+  /** host.readFile target decoded as binary (a NUL byte in the probe window). */
+  'file-binary': { path: string }
+  /** host.writeFile was refused by the filesystem. */
+  'file-write-failed': { path: string }
   'agent-preset-read-only': { agentPreset: string; reason: string }
   'agent-preset-locked': { sessionId: SessionId; agentPreset: string }
   'agent-preset-conflict': { sessionId: SessionId; requestedPreset: string; existingPreset?: string }

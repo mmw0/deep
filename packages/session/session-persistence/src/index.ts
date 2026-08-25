@@ -238,6 +238,24 @@ export abstract class SessionPersistence extends Service {
    * @returns one header and opaque revision per materialized session without loading full logs.
    */
   abstract listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot[]>
+
+  /**
+   * Permanently remove one session's durable storage: the event log, every
+   * session-local artifact directory, and the metadata record. The caller
+   * must guarantee the session is not live (no attached agent and no
+   * in-flight append): dispose the live session first, then delete.
+   *
+   * The base implementation is an honest no-op that reports nothing removed:
+   * a backend that cannot remove a single session's storage keeps its data
+   * and returns `false`, so a caller never mistakes an unsupported wipe for
+   * a completed one.
+   * @param meta - the immutable header identifying the storage location.
+   * @param signal - optional cancellation for backend delete work.
+   * @returns `true` when stored bytes existed and were durably removed.
+   */
+  delete(_meta: SessionHeader, _signal?: AbortSignal): Promise<boolean> {
+    return Promise.resolve(false)
+  }
 }
 
 export default SessionPersistence

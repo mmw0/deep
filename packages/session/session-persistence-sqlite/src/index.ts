@@ -129,6 +129,11 @@ export class SqliteSessionPersistence extends SessionPersistence {
   listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot[]> {
     return this.store.listSnapshots(signal)
   }
+
+  /** Rows-only delete: the sessions record plus its cascaded event rows. */
+  override delete(meta: SessionHeader, signal?: AbortSignal): Promise<boolean> {
+    return this.store.deleteSession(meta.id, signal)
+  }
 }
 
 export default SqliteSessionPersistence

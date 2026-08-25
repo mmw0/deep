@@ -428,18 +428,26 @@ describe('WorkspaceRuntime', () => {
     await Promise.resolve()
     expect(connect).toHaveBeenLastCalledWith(wid('current-home'))
 
+    // With no current session and no explicit target, chat mode is the
+    // default posture: a Workspace-less chat session connects, never a
+    // most-recent Workspace.
     sessions.clear()
+    const connectChat = vi.spyOn(workspaces, 'connectChat').mockResolvedValue(sid('current'))
     workspaces.startSession()
     await Promise.resolve()
-    expect(connect).toHaveBeenLastCalledWith(wid('recent-home'))
+    expect(connectChat).toHaveBeenCalledOnce()
+    expect(connect).toHaveBeenLastCalledWith(wid('current-home'))
 
     const emptyCtx = new Context()
     const emptyApi = new FakeApiClient()
     const emptySessions = new SessionRuntime(emptyCtx, emptyApi, fakeRemote())
     const emptyWorkspaces = new WorkspaceRuntime(emptyCtx, emptyApi, emptySessions)
-    const clear = vi.spyOn(emptySessions, 'clear')
+    const emptyConnectChat = vi.spyOn(emptyWorkspaces, 'connectChat').mockResolvedValue(sid('blank'))
+    const emptyOpen = vi.spyOn(emptySessions, 'open').mockImplementation(() => {})
     emptyWorkspaces.startSession()
-    expect(clear).toHaveBeenCalledOnce()
+    await Promise.resolve()
+    expect(emptyConnectChat).toHaveBeenCalledOnce()
+    expect(emptyOpen).toHaveBeenCalledWith(sid('blank'))
   })
 
   it('archives a session, projects the set from the response, list, and frame, and clears only the current one', async () => {
@@ -510,7 +518,9 @@ describe('WorkspaceRuntime', () => {
       payload: { type: 'host/archived-sessions-changed', archivedSessionIds: [sid('s-open')] },
     } as never)
     await new Promise(resolve => setTimeout(resolve, 0))
-    expect(sessions.list.getSnapshot().current).toBeUndefined()
+    // The archived current selection is swept away: chat mode lands on a
+    // fresh Workspace-less session (never back onto the archived id).
+    expect(sessions.list.getSnapshot().current).not.toBe(sid('s-open'))
     gate.resolve(ok({ items: [], archivedSessionIds: [] }))
     await hydration
     expect(workspaces.list.getSnapshot().archivedSessionIds).toEqual(['s-open'])
@@ -530,7 +540,7 @@ describe('startInitialSelection', () => {
     return { api, sessions, workspaces }
   }
 
-  it('connects the recent Workspace blank session once baselines are ready and opens it', async () => {
+  it('connects the chat blank session once baselines are ready and opens it', async () => {
     const b = bench()
     const stop = b.workspaces.startInitialSelection()
     // Nothing happens before both baselines land.
@@ -544,12 +554,14 @@ describe('startInitialSelection', () => {
     await b.sessions.refresh()
     // Store notifications and the connect round trip are microtask-batched.
     await new Promise(resolve => setTimeout(resolve, 0))
-    expect(b.api.callsOf('session.create')).toEqual([{ workspaceId: 'recent' }])
+    // Chat is the default posture: the initial selection mints a
+    // Workspace-less chat session, never the most-recent Workspace.
+    expect(b.api.callsOf('session.create')).toEqual([{}])
     expect(b.sessions.list.getSnapshot().current).toBe('s-new')
     stop()
   })
 
-  it('stays idle when a session is already current or no recent Workspace exists', async () => {
+  it('stays idle when a session is already current and otherwise lands in chat', async () => {
     const withCurrent = bench()
     withCurrent.api.onList = () => Promise.resolve(ok({
       items: [{ sessionId: sid('s1'), updatedAt: 1, running: false, blank: false }] as never[],
@@ -563,13 +575,16 @@ describe('startInitialSelection', () => {
     expect(withCurrent.api.callsOf('session.create')).toHaveLength(0)
     stopCurrent()
 
-    const noRecent = bench()
-    const stopEmpty = noRecent.workspaces.startInitialSelection()
-    await noRecent.workspaces.refresh()
-    await noRecent.sessions.refresh()
+    // With no current session, chat mode connects (a Workspace-less create).
+    const noCurrent = bench()
+    const stopEmpty = noCurrent.workspaces.startInitialSelection()
+    noCurrent.api.onCreate = () => Promise.resolve(ok({ sessionId: sid('s-chat') }))
+    await noCurrent.workspaces.refresh()
+    await noCurrent.sessions.refresh()
     await new Promise(resolve => setTimeout(resolve, 0))
-    expect(noRecent.api.callsOf('session.create')).toHaveLength(0)
-    expect(() => noRecent.workspaces.startInitialSelection()).toThrow(/already started/)
+    expect(noCurrent.api.callsOf('session.create')).toEqual([{}])
+    expect(noCurrent.sessions.list.getSnapshot().current).toBe('s-chat')
+    expect(() => noCurrent.workspaces.startInitialSelection()).toThrow(/already started/)
     stopEmpty()
   })
 

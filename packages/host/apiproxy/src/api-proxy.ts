@@ -4,9 +4,9 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdir, stat } from 'node:fs/promises'
+import { mkdir, opendir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { z as zod } from 'zod'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
@@ -37,7 +37,7 @@ import {
 import type { PresetBearingSession } from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {
-  ApiProxy, ConfigurableProviderView, CredentialView, GoalRef, HistoryEntry, HostFrame,
+  ApiProxy, ConfigurableProviderView, CredentialView, FileContent, FileEntry, FileListing, GoalRef, HistoryEntry, HostFrame,
   ModelCatalogFailure, ModelProviderGroup,
   ModelReasoning, MuxFrame, PromptContentPart, QuestionResponsePayload, SessionListMetadata, SessionProjectionsBlock, SessionSearchItem,
   QueuedInboxItem, SessionSummary, SettingsNamespaceView, SubagentAddress, JobView, ToolEventView,
@@ -124,6 +124,35 @@ export const DEFAULT_COLD_BLANK_PROBE_MAX_BYTES = 1024
 
 /** Conversation message event types (the pagination counting unit). */
 const MESSAGE_TYPES = new Set(['user/message', 'assistant/message'])
+
+/** Maximum child rows one host.listFiles level materializes. */
+const HOST_FILE_LISTING_LIMIT = 1000
+/** Maximum byte size host.readFile decodes into the in-app editor. */
+const HOST_FILE_READ_LIMIT = 2 * 1024 * 1024
+/** Leading window host.readFile probes for the NUL-byte binary tell. */
+const HOST_FILE_BINARY_PROBE = 8192
+
+/**
+ * Ancestor chain from the filesystem root to `target` inclusive, as
+ * host.listFiles breadcrumb crumbs. Mirrors the browse picker's crumb
+ * derivation so the file browser can reuse the same breadcrumb UI.
+ */
+function ancestryCrumbs(target: string, home: string): Array<{ name: string; path: string; hidden: boolean }> {
+  const crumbs: Array<{ name: string; path: string; hidden: boolean }> = []
+  const absolute = resolve(target)
+  let current = absolute
+  for (;;) {
+    crumbs.unshift({
+      name: current === home ? 'Home' : basename(current) || current,
+      path: current,
+      hidden: false,
+    })
+    const parent = dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  return crumbs
+}
 
 /** Validate one prompt as a batch before publishing any durable image object. */
 async function durablePromptContent(ctx: Context, content: readonly PromptContentPart[]): Promise<ContentBlock[]> {
@@ -1650,7 +1679,15 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
   /** Resolve or create one path while holding the Host's workspace-create chain. */
   function ensureWorkspace(path: string): Promise<{ workspace: Workspace; created: boolean }> {
     const operation = workspaceCreationChain.then(async () => {
-      const existing = await ctx.workspaceRegistry.resolveByPath(path)
+      // A missing path is not an error here: resolveByPath rejects during
+      // realpath, but registry.create materializes the directory (the one-click
+      // workspace flow may name a folder that does not exist yet).
+      let existing: Workspace | undefined
+      try {
+        existing = await ctx.workspaceRegistry.resolveByPath(path)
+      } catch {
+        existing = undefined
+      }
       if (existing !== undefined) return { workspace: existing, created: false }
       return { workspace: await ctx.workspaceRegistry.create(path), created: true }
     })
@@ -2531,6 +2568,85 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         agent.cancel({ kind: 'user' }, { keepInbox: true })
         return Promise.resolve(ok(request, { accepted: true as const }))
       },
+
+      async delete(request) {
+        const { sessionId } = request.payload
+        const live = ctx.sessions.get(sessionId)
+        const agent = ctx.agents.get(sessionId)
+        // A running agent's write-behind chain is mid-flight; deleting its
+        // storage underneath would corrupt durability. Stop it first.
+        if (agent?.status === 'running') {
+          return err(request, {
+            code: 'agent-busy',
+            message: `session "${sessionId}" is running; stop it before deleting`,
+            details: { reason: 'running' },
+          })
+        }
+        // Subagent sessions belong to their parent's turn; deleting one
+        // directly would strand the parent's lineage. Delete or fork the
+        // parent instead.
+        if (agent !== undefined && hasSubagentOwner(agent.session, agent)) {
+          return err(request, subagentOwnershipError(sessionId))
+        }
+        // Resolve the durable header: the live session's own, else a cold
+        // storage scan (no agent attached after a host restart).
+        let header: SessionHeader | undefined = live?.header
+        const persistence = ctx.get('sessionPersistence')
+        if (header === undefined && persistence !== undefined) {
+          try {
+            header = (await persistence.list()).find(stored => stored.id === sessionId)
+          } catch (error: unknown) {
+            return err(request, {
+              code: 'internal',
+              message: `failed to resolve session "${sessionId}" for deletion: ${String(error)}`,
+              details: {},
+            })
+          }
+        }
+        if (live !== undefined && header !== undefined) {
+          // Drain buffered write-behind events BEFORE disposal: the disposal
+          // retirement flushes too, but a queued write landing after the
+          // storage wipe would recreate the deleted artifact.
+          try {
+            await ctx.sessions.flush(live)
+          } catch {
+            // A failed flush leaves events undurable — exactly what deletion
+            // wants; proceed to the wipe.
+          }
+        }
+        if (live !== undefined) ctx.sessions.forceDispose(sessionId)
+        let removed = false
+        // The base service's delete is a capability real backends always
+        // carry; a minimal test double may omit it, in which case the wire
+        // resolve still succeeds with nothing removed from storage.
+        if (header !== undefined && persistence !== undefined && typeof persistence.delete === 'function') {
+          try {
+            removed = await persistence.delete(header)
+          } catch (error: unknown) {
+            return err(request, {
+              code: 'internal',
+              message: `failed to delete storage for session "${sessionId}": ${String(error)}`,
+              details: {},
+            })
+          }
+        }
+        // The registry's accounting (workspace sessionIds slots, the archive
+        // set, the header/path indexes) must forget the id too — its durable
+        // storage is gone and no surface may resurrect the row. Durable record
+        // writes stream host/workspace-changed frames on their own.
+        try {
+          await ctx.workspaceRegistry.forgetSession(sessionId)
+        } catch (error: unknown) {
+          return err(request, {
+            code: 'internal',
+            message: `failed to forget session "${sessionId}" accounting: ${String(error)}`,
+            details: {},
+          })
+        }
+        // forceDispose emitted session/disposed; every client drops the row
+        // through host/session-removed without a further baseline pull.
+        return ok(request, { removed })
+      },
     },
 
     subagents: {
@@ -2758,10 +2874,27 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async delete(request) {
         const { workspaceId } = request.payload
+        const workspace = ctx.workspaceRegistry.get(brandWorkspaceId(workspaceId))
+        // Sessions that live in this workspace's directory: their logs and the
+        // directory itself are wiped by the registry delete (dsh-workspace's
+        // deleteWorkspaceArtifacts), so they must also leave the in-memory
+        // store — otherwise every client re-lists them as "Ungrouped" ghosts.
+        // Snapshot before the registry forgets the workspace record.
+        const doomed = workspace === undefined ? [] : ctx.sessions.list()
+          .filter(session => {
+            const cwd: string | undefined = session.header.cwd
+            return cwd !== undefined && (cwd === workspace.path || cwd.startsWith(workspace.path + '/'))
+          })
+          .map(session => session.id)
         const operation = workspaceCreationChain.then(() =>
           ctx.workspaceRegistry.delete(brandWorkspaceId(workspaceId)))
         workspaceCreationChain = operation.then(() => undefined, () => undefined)
         if (!await operation) return workspaceNotFound(request, workspaceId)
+        for (const sessionId of doomed) {
+          const agent = ctx.agents.get(sessionId)
+          if (agent?.status === 'running') continue
+          ctx.sessions.forceDispose(sessionId)
+        }
         return ok(request, { deleted: true as const })
       },
 
@@ -2908,6 +3041,166 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async openPath(request, signal) {
         return openPath(request, request.payload.path, signal)
+      },
+
+      async listFiles(request, signal) {
+        const requested = request.payload.path
+        const home = homedir()
+        const target = resolve(requested ?? join(home, 'sandboxes'))
+        try {
+          const targetStat = await stat(target)
+          signal?.throwIfAborted()
+          if (!targetStat.isDirectory()) {
+            return err(request, {
+              code: 'path-not-file',
+              message: `cannot list "${target}": not a directory`,
+              details: { path: target },
+            })
+          }
+        } catch (error: unknown) {
+          signal?.throwIfAborted()
+          return err(request, {
+            code: 'directory-unreadable',
+            message: `cannot list "${target}": ${error instanceof Error ? error.message : String(error)}`,
+            details: { path: target },
+          })
+        }
+        const entries: FileEntry[] = []
+        let truncated = false
+        try {
+          const level = await opendir(target)
+          try {
+            for (;;) {
+              signal?.throwIfAborted()
+              const dirent = await level.read()
+              if (dirent === null) break
+              if (entries.length >= HOST_FILE_LISTING_LIMIT) { truncated = true; break }
+              const childPath = join(target, dirent.name)
+              let isDirectory = dirent.isDirectory()
+              let symlink = dirent.isSymbolicLink()
+              let size = 0
+              if (!isDirectory || symlink) {
+                try {
+                  const childStat = await stat(childPath)
+                  isDirectory = childStat.isDirectory()
+                  size = isDirectory ? 0 : Number(childStat.size)
+                } catch {
+                  // Broken symlink or raced-away child: report the dirent's own
+                  // kind with a zero size rather than failing the whole level.
+                  isDirectory = false
+                  size = 0
+                }
+              }
+              entries.push({
+                name: dirent.name,
+                path: childPath,
+                isDirectory,
+                size,
+                hidden: dirent.name.startsWith('.'),
+                symlink,
+              })
+            }
+          } finally {
+            const closing = level.close()
+            if (signal?.aborted) closing.catch(() => {})
+            else await closing
+          }
+        } catch (error: unknown) {
+          signal?.throwIfAborted()
+          return err(request, {
+            code: 'directory-unreadable',
+            message: `cannot list "${target}": ${error instanceof Error ? error.message : String(error)}`,
+            details: { path: target },
+          })
+        }
+        entries.sort((a, b) =>
+          a.isDirectory === b.isDirectory
+            ? a.name.localeCompare(b.name, 'en', { sensitivity: 'base', numeric: true })
+            : a.isDirectory ? -1 : 1)
+        const listing: FileListing = {
+          path: target,
+          home,
+          crumbs: ancestryCrumbs(target, home),
+          entries,
+          truncated,
+        }
+        return ok(request, listing)
+      },
+
+      async readFile(request, signal) {
+        const target = resolve(request.payload.path)
+        let size: number
+        try {
+          const info = await stat(target)
+          signal?.throwIfAborted()
+          if (!info.isFile()) {
+            return err(request, {
+              code: 'file-not-found',
+              message: `"${target}" is not a regular file`,
+              details: { path: target },
+            })
+          }
+          size = Number(info.size)
+        } catch (error: unknown) {
+          signal?.throwIfAborted()
+          return err(request, {
+            code: 'file-not-found',
+            message: `cannot read "${target}": ${error instanceof Error ? error.message : String(error)}`,
+            details: { path: target },
+          })
+        }
+        if (size > HOST_FILE_READ_LIMIT) {
+          return err(request, {
+            code: 'file-too-large',
+            message: `"${target}" is ${size} bytes; the in-app editor reads at most ${HOST_FILE_READ_LIMIT}`,
+            details: { path: target, size },
+          })
+        }
+        let buffer: Buffer
+        try {
+          buffer = await readFile(target)
+          signal?.throwIfAborted()
+        } catch (error: unknown) {
+          signal?.throwIfAborted()
+          return err(request, {
+            code: 'file-not-found',
+            message: `cannot read "${target}": ${error instanceof Error ? error.message : String(error)}`,
+            details: { path: target },
+          })
+        }
+        // A NUL byte in the probe window is the pragmatic binary tell: text
+        // encodings never emit one, and every common binary format leads with
+        // one early (executables, images, archives, compressed media).
+        const probe = buffer.subarray(0, HOST_FILE_BINARY_PROBE)
+        if (probe.includes(0)) {
+          return err(request, {
+            code: 'file-binary',
+            message: `"${target}" is not a text file`,
+            details: { path: target },
+          })
+        }
+        const content: FileContent = {
+          path: target,
+          content: buffer.toString('utf8'),
+          size: buffer.byteLength,
+        }
+        return ok(request, content)
+      },
+
+      async writeFile(request) {
+        const target = resolve(request.payload.path)
+        try {
+          await mkdir(dirname(target), { recursive: true })
+          const bytes = Buffer.byteLength(request.payload.content, 'utf8')
+          await writeFile(target, request.payload.content, 'utf8')
+          return ok(request, { path: target, bytes })
+        } catch (error: unknown) {
+          return err(request, {
+            code: 'file-write-failed',
+            message: `cannot write "${target}": ${error instanceof Error ? error.message : String(error)}`,
+            details: { path: target },
+          })
+        }
       },
     },
 
