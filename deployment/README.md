@@ -101,6 +101,13 @@ Prerequisites: Node.js 20+, pnpm 9+, Python 3.11+, uv.
   `stealth/ox-alpha` is unlimited but flaky (~50% retries).
 - Re-sync verified models anytime: `python3 ~/.dsh/sync-openrouter-models.py`
 
+## Note on CI workflows
+
+The upstream `.github/workflows/*.yml` CI pipelines were **stripped from this
+repo's history** — the push token lacked GitHub's `workflow` scope. They are not
+needed to build or run this project (see Restore below). If you want them back,
+fetch upstream: `git remote add upstream https://github.com/deepseek-ai/deepseek-harness.git && git fetch upstream`.
+
 ## Runtime notes
 
 - Launched with `DSH_PERMISSION_MODE=danger-full-access` — agent Bash runs
