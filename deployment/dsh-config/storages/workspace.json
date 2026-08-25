@@ -1,0 +1,17 @@
+{
+  "unit": {
+    "name": "workspace",
+    "version": 2
+  },
+  "global": {
+    "initialized": true,
+    "workspaceIds": [],
+    "archivedSessionIds": [
+      "session-4103b293-999a-411d-8dcc-5820c4ea645e",
+      "session-b5d656c3-85a4-4b4f-bfdb-ed8625debce9"
+    ]
+  },
+  "tables": {
+    "workspaces": {}
+  }
+}
